@@ -161,8 +161,9 @@ public class BukkitNMSAdapter implements NMSAdapter {
 
     @Override
     public void sendMapUpdate(Player player, int mapId, byte[] pixels) {
-        // Not available without ProtocolLib
-        // Maps use standard Bukkit MapRenderer system
+        // When using MapViewManager, the MapRenderer handles rendering
+        // This method is now a no-op since we use Bukkit's MapRenderer API
+        // The renderer will automatically send map data to clients
     }
 
     @Override
@@ -172,18 +173,42 @@ public class BukkitNMSAdapter implements NMSAdapter {
     }
 
     @Override
+    @SuppressWarnings("deprecation")
     public ItemStack createMapItem(int mapId) {
         ItemStack item = new ItemStack(filledMapMaterial);
         
         if (hasMapMeta) {
             // 1.13+ - use MapMeta
-            MapMeta meta = (MapMeta) item.getItemMeta();
-            if (meta != null) {
-                try {
-                    setMapIdMethod.invoke(meta, mapId);
+            try {
+                MapMeta meta = (MapMeta) item.getItemMeta();
+                if (meta != null) {
+                    // Try direct method first (most versions)
+                    try {
+                        meta.setMapId(mapId);
+                    } catch (NoSuchMethodError e) {
+                        // Fall back to reflection
+                        setMapIdMethod.invoke(meta, mapId);
+                    }
                     item.setItemMeta(meta);
-                } catch (Exception e) {
-                    logger.log(Level.WARNING, "Failed to set map ID via reflection", e);
+                }
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "Failed to set map ID, trying alternative method", e);
+                // Try creating with map view
+                try {
+                    org.bukkit.map.MapView view = org.bukkit.Bukkit.getMap(mapId);
+                    if (view != null) {
+                        MapMeta meta = (MapMeta) item.getItemMeta();
+                        if (meta != null) {
+                            // Some versions use setMapView instead
+                            try {
+                                java.lang.reflect.Method setMapView = MapMeta.class.getMethod("setMapView", org.bukkit.map.MapView.class);
+                                setMapView.invoke(meta, view);
+                                item.setItemMeta(meta);
+                            } catch (NoSuchMethodException ignored) {
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
                 }
             }
         } else {
@@ -244,6 +269,7 @@ public class BukkitNMSAdapter implements NMSAdapter {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public int spawnMapDisplay(Location location, int mapId) {
         if (!hasItemDisplay) {
             return -1;
@@ -267,32 +293,35 @@ public class BukkitNMSAdapter implements NMSAdapter {
         return -1;
     }
 
+    @SuppressWarnings("unchecked")
     private Entity spawnItemDisplayReflection(World world, Location location, int mapId) {
         try {
-            // Get the spawn method that accepts a Consumer
-            Method spawnMethod = World.class.getMethod("spawn", Location.class, Class.class, org.bukkit.util.Consumer.class);
-            
             // Create the item to display
             ItemStack mapItem = createMapItem(mapId);
             
-            // We need to create a consumer that configures the ItemDisplay
-            // This is tricky with reflection, so we'll use a simpler spawn and configure after
+            // Try simpler spawn method
             Method simpleSpawn = World.class.getMethod("spawn", Location.class, Class.class);
             Entity entity = (Entity) simpleSpawn.invoke(world, location, itemDisplayClass);
             
-            // Configure the display
-            Method setItemStack = itemDisplayClass.getMethod("setItemStack", ItemStack.class);
-            setItemStack.invoke(entity, mapItem);
-            
-            // Try to set billboard and transform
+            // Configure the display - set the item
             try {
+                Method setItemStack = itemDisplayClass.getMethod("setItemStack", ItemStack.class);
+                setItemStack.invoke(entity, mapItem);
+            } catch (NoSuchMethodException e) {
+                logger.fine("setItemStack not found on ItemDisplay");
+            }
+            
+            // Try to set billboard to FIXED
+            try {
+                Class<?> displayClass = Class.forName("org.bukkit.entity.Display");
                 Class<?> billboardClass = Class.forName("org.bukkit.entity.Display$Billboard");
-                Method setBillboard = itemDisplayClass.getMethod("setBillboard", billboardClass);
+                Method setBillboard = displayClass.getMethod("setBillboard", billboardClass);
                 Object fixedBillboard = Enum.valueOf((Class<Enum>) billboardClass, "FIXED");
                 setBillboard.invoke(entity, fixedBillboard);
             } catch (Exception ignored) {
             }
             
+            // Try to set transform to FIXED (makes it appear like in item frame)
             try {
                 Class<?> transformClass = Class.forName("org.bukkit.entity.ItemDisplay$ItemDisplayTransform");
                 Method setTransform = itemDisplayClass.getMethod("setItemDisplayTransform", transformClass);
@@ -301,9 +330,17 @@ public class BukkitNMSAdapter implements NMSAdapter {
             } catch (Exception ignored) {
             }
             
+            // Set view range
+            try {
+                Class<?> displayClass = Class.forName("org.bukkit.entity.Display");
+                Method setViewRange = displayClass.getMethod("setViewRange", float.class);
+                setViewRange.invoke(entity, 64.0f);
+            } catch (Exception ignored) {
+            }
+            
             return entity;
         } catch (Exception e) {
-            logger.log(Level.FINE, "Could not spawn ItemDisplay via reflection", e);
+            logger.log(Level.FINE, "Could not spawn ItemDisplay via reflection: " + e.getMessage());
             return null;
         }
     }
@@ -326,29 +363,45 @@ public class BukkitNMSAdapter implements NMSAdapter {
         World world = location.getWorld();
         if (world == null) return;
         
-        double x = location.getX();
-        double y = location.getY();
-        double z = location.getZ();
+        double x = location.getBlockX();
+        double y = location.getBlockY();
+        double z = location.getBlockZ();
         
-        for (double i = 0; i <= 1; i += 0.1) {
+        // Draw outline of a block
+        double step = 0.2;
+        for (double i = 0; i <= 1; i += step) {
+            // Top edge
             spawnParticleSafe(player, x + i, y + 1, z);
+            spawnParticleSafe(player, x + i, y + 1, z + 1);
+            // Bottom edge
             spawnParticleSafe(player, x + i, y, z);
+            spawnParticleSafe(player, x + i, y, z + 1);
+            // Vertical edges
             spawnParticleSafe(player, x, y + i, z);
             spawnParticleSafe(player, x + 1, y + i, z);
+            spawnParticleSafe(player, x, y + i, z + 1);
+            spawnParticleSafe(player, x + 1, y + i, z + 1);
+            // Side edges
+            spawnParticleSafe(player, x, y, z + i);
+            spawnParticleSafe(player, x + 1, y, z + i);
+            spawnParticleSafe(player, x, y + 1, z + i);
+            spawnParticleSafe(player, x + 1, y + 1, z + i);
         }
     }
 
     private void spawnParticleSafe(Player player, double x, double y, double z) {
         try {
-            if (dustOptions != null) {
-                player.spawnParticle(dustParticle, x, y, z, 1, dustOptions);
-            } else {
+            if (dustOptions != null && dustParticle != null) {
+                player.spawnParticle(dustParticle, x, y, z, 1, 0, 0, 0, 0, dustOptions);
+            } else if (flameParticle != null) {
                 player.spawnParticle(flameParticle, x, y, z, 1, 0, 0, 0, 0);
             }
         } catch (Exception e) {
             // Fallback to basic particle
             try {
-                player.spawnParticle(flameParticle, x, y, z, 1, 0, 0, 0, 0);
+                if (flameParticle != null) {
+                    player.spawnParticle(flameParticle, x, y, z, 1, 0, 0, 0, 0);
+                }
             } catch (Exception ignored) {
             }
         }

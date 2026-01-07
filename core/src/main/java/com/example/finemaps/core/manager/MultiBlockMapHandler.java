@@ -14,8 +14,8 @@ import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.RayTraceResult;
-import org.bukkit.util.Vector;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -36,6 +36,9 @@ public class MultiBlockMapHandler {
     // Key: group ID -> list of block locations
     private final Map<Long, Set<String>> groupBlocks = new ConcurrentHashMap<>();
     
+    // Track preview tasks per player
+    private final Map<UUID, BukkitTask> playerPreviewTasks = new ConcurrentHashMap<>();
+    
     // Track preview display entities per player
     private final Map<UUID, List<Integer>> playerPreviewDisplays = new ConcurrentHashMap<>();
     
@@ -45,10 +48,11 @@ public class MultiBlockMapHandler {
     private final NamespacedKey groupIdKey;
     private final NamespacedKey gridPositionKey;
     
-    // Preview particle colors
+    // Preview particle colors - using Particle.DustOptions if available
     private Object validPreviewDust;
     private Object invalidPreviewDust;
     private Particle dustParticle;
+    private boolean hasDustOptions = false;
 
     public MultiBlockMapHandler(Plugin plugin, MapManager mapManager) {
         this.plugin = plugin;
@@ -60,18 +64,27 @@ public class MultiBlockMapHandler {
         this.dustParticle = findDustParticle();
         
         // Setup dust options for particles
+        setupDustOptions();
+    }
+    
+    /**
+     * Sets up the dust options for particle preview.
+     */
+    private void setupDustOptions() {
         try {
             Class<?> dustOptionsClass = Class.forName("org.bukkit.Particle$DustOptions");
             this.validPreviewDust = dustOptionsClass
                 .getConstructor(Color.class, float.class)
-                .newInstance(Color.fromRGB(0, 255, 0), 0.5f);
+                .newInstance(Color.fromRGB(0, 255, 0), 1.0f);
             this.invalidPreviewDust = dustOptionsClass
                 .getConstructor(Color.class, float.class)
-                .newInstance(Color.fromRGB(255, 0, 0), 0.5f);
+                .newInstance(Color.fromRGB(255, 0, 0), 1.0f);
+            this.hasDustOptions = true;
         } catch (Exception e) {
             // Older version without DustOptions
             this.validPreviewDust = null;
             this.invalidPreviewDust = null;
+            this.hasDustOptions = false;
         }
     }
     
@@ -96,35 +109,46 @@ public class MultiBlockMapHandler {
      * @param player The player
      */
     public void startPreviewTask(Player player) {
-        if (playersWithPreview.contains(player.getUniqueId())) {
+        UUID playerId = player.getUniqueId();
+        
+        // Cancel any existing task first
+        BukkitTask existingTask = playerPreviewTasks.get(playerId);
+        if (existingTask != null) {
+            existingTask.cancel();
+        }
+        
+        if (playersWithPreview.contains(playerId)) {
             return; // Already running
         }
         
-        playersWithPreview.add(player.getUniqueId());
+        playersWithPreview.add(playerId);
         
-        new BukkitRunnable() {
+        BukkitTask task = new BukkitRunnable() {
             @Override
             public void run() {
-                if (!player.isOnline()) {
-                    stopPreviewTask(player);
+                Player p = plugin.getServer().getPlayer(playerId);
+                if (p == null || !p.isOnline()) {
+                    stopPreviewTask(p != null ? p : player);
                     cancel();
                     return;
                 }
                 
-                ItemStack held = player.getInventory().getItemInMainHand();
+                ItemStack held = p.getInventory().getItemInMainHand();
                 long groupId = mapManager.getGroupIdFromItem(held);
                 
                 if (groupId <= 0) {
-                    clearPreview(player);
-                    stopPreviewTask(player);
+                    clearPreview(p);
+                    stopPreviewTask(p);
                     cancel();
                     return;
                 }
                 
                 // Show preview outline
-                showPlacementPreview(player, held, groupId);
+                showPlacementPreview(p, held, groupId);
             }
-        }.runTaskTimer(plugin, 0L, 5L); // Update every 5 ticks (0.25s)
+        }.runTaskTimer(plugin, 0L, 4L); // Update every 4 ticks (0.2s)
+        
+        playerPreviewTasks.put(playerId, task);
     }
     
     /**
@@ -133,7 +157,17 @@ public class MultiBlockMapHandler {
      * @param player The player
      */
     public void stopPreviewTask(Player player) {
-        playersWithPreview.remove(player.getUniqueId());
+        if (player == null) return;
+        
+        UUID playerId = player.getUniqueId();
+        playersWithPreview.remove(playerId);
+        
+        // Cancel the task
+        BukkitTask task = playerPreviewTasks.remove(playerId);
+        if (task != null) {
+            task.cancel();
+        }
+        
         clearPreview(player);
     }
     
@@ -225,11 +259,9 @@ public class MultiBlockMapHandler {
      * @param valid Whether placement would be valid
      */
     private void showOutlineParticles(Player player, List<Location> locations, BlockFace facing, boolean valid) {
-        Object dustOptions = valid ? validPreviewDust : invalidPreviewDust;
-        
         for (Location loc : locations) {
             // Draw outline around each block position
-            drawBlockOutline(player, loc, facing, dustOptions);
+            drawBlockOutline(player, loc, facing, valid);
         }
     }
     
@@ -239,54 +271,114 @@ public class MultiBlockMapHandler {
      * @param player The player
      * @param loc The location
      * @param facing The facing direction
-     * @param dustOptions The dust options (color/size)
+     * @param valid Whether placement is valid (green) or invalid (red)
      */
-    private void drawBlockOutline(Player player, Location loc, BlockFace facing, Object dustOptions) {
+    private void drawBlockOutline(Player player, Location loc, BlockFace facing, boolean valid) {
         World world = loc.getWorld();
         if (world == null) return;
         
-        double offset = 0.01; // Slight offset from wall
+        double offset = 0.05; // Slight offset from wall
         double x = loc.getBlockX();
         double y = loc.getBlockY();
         double z = loc.getBlockZ();
         
-        // Calculate face offset based on facing direction
-        double faceOffsetX = facing.getModX() * offset;
-        double faceOffsetZ = facing.getModZ() * offset;
+        Object dustOptions = valid ? validPreviewDust : invalidPreviewDust;
         
-        // Draw the 4 edges of the block face
-        for (double i = 0; i <= 1; i += 0.2) {
-            try {
-                if (dustOptions != null && dustParticle != null) {
-                    // Horizontal edges
-                    if (facing == BlockFace.NORTH || facing == BlockFace.SOUTH) {
-                        double faceZ = facing == BlockFace.NORTH ? z : z + 1;
-                        player.spawnParticle(dustParticle, x + i, y, faceZ + faceOffsetZ, 1, dustOptions);
-                        player.spawnParticle(dustParticle, x + i, y + 1, faceZ + faceOffsetZ, 1, dustOptions);
-                        player.spawnParticle(dustParticle, x, y + i, faceZ + faceOffsetZ, 1, dustOptions);
-                        player.spawnParticle(dustParticle, x + 1, y + i, faceZ + faceOffsetZ, 1, dustOptions);
-                    } else {
-                        double faceX = facing == BlockFace.WEST ? x : x + 1;
-                        player.spawnParticle(dustParticle, faceX + faceOffsetX, y, z + i, 1, dustOptions);
-                        player.spawnParticle(dustParticle, faceX + faceOffsetX, y + 1, z + i, 1, dustOptions);
-                        player.spawnParticle(dustParticle, faceX + faceOffsetX, y + i, z, 1, dustOptions);
-                        player.spawnParticle(dustParticle, faceX + faceOffsetX, y + i, z + 1, 1, dustOptions);
-                    }
+        // Draw the 4 edges of the block face with particles
+        double step = 0.25;
+        
+        try {
+            for (double i = 0; i <= 1; i += step) {
+                if (hasDustOptions && dustOptions != null && dustParticle != null) {
+                    // Use colored dust particles
+                    spawnDustParticle(player, facing, x, y, z, i, offset, dustOptions);
                 } else {
-                    // Fallback for older versions without DustOptions
+                    // Fallback: use FLAME or HAPPY_VILLAGER particles
+                    spawnFallbackParticle(player, facing, x, y, z, i, offset, valid);
+                }
+            }
+        } catch (Exception e) {
+            // If all else fails, try basic flame particles
+            try {
+                Particle flame = Particle.valueOf("FLAME");
+                for (double i = 0; i <= 1; i += step) {
                     if (facing == BlockFace.NORTH || facing == BlockFace.SOUTH) {
                         double faceZ = facing == BlockFace.NORTH ? z : z + 1;
-                        player.spawnParticle(Particle.FLAME, x + i, y, faceZ, 1, 0, 0, 0, 0);
-                        player.spawnParticle(Particle.FLAME, x + i, y + 1, faceZ, 1, 0, 0, 0, 0);
-                    } else {
+                        player.spawnParticle(flame, x + i, y, faceZ, 1, 0, 0, 0, 0);
+                        player.spawnParticle(flame, x + i, y + 1, faceZ, 1, 0, 0, 0, 0);
+                    } else if (facing == BlockFace.EAST || facing == BlockFace.WEST) {
                         double faceX = facing == BlockFace.WEST ? x : x + 1;
-                        player.spawnParticle(Particle.FLAME, faceX, y, z + i, 1, 0, 0, 0, 0);
-                        player.spawnParticle(Particle.FLAME, faceX, y + 1, z + i, 1, 0, 0, 0, 0);
+                        player.spawnParticle(flame, faceX, y, z + i, 1, 0, 0, 0, 0);
+                        player.spawnParticle(flame, faceX, y + 1, z + i, 1, 0, 0, 0, 0);
                     }
                 }
-            } catch (Exception e) {
-                // Particle not supported, ignore
+            } catch (Exception ignored) {
+                // Give up on particles
             }
+        }
+    }
+    
+    /**
+     * Spawns dust particles for the outline.
+     */
+    private void spawnDustParticle(Player player, BlockFace facing, double x, double y, double z, 
+                                    double i, double offset, Object dustOptions) {
+        if (facing == BlockFace.NORTH) {
+            double faceZ = z + offset;
+            player.spawnParticle(dustParticle, x + i, y, faceZ, 1, dustOptions);
+            player.spawnParticle(dustParticle, x + i, y + 1, faceZ, 1, dustOptions);
+            player.spawnParticle(dustParticle, x, y + i, faceZ, 1, dustOptions);
+            player.spawnParticle(dustParticle, x + 1, y + i, faceZ, 1, dustOptions);
+        } else if (facing == BlockFace.SOUTH) {
+            double faceZ = z + 1 - offset;
+            player.spawnParticle(dustParticle, x + i, y, faceZ, 1, dustOptions);
+            player.spawnParticle(dustParticle, x + i, y + 1, faceZ, 1, dustOptions);
+            player.spawnParticle(dustParticle, x, y + i, faceZ, 1, dustOptions);
+            player.spawnParticle(dustParticle, x + 1, y + i, faceZ, 1, dustOptions);
+        } else if (facing == BlockFace.WEST) {
+            double faceX = x + offset;
+            player.spawnParticle(dustParticle, faceX, y, z + i, 1, dustOptions);
+            player.spawnParticle(dustParticle, faceX, y + 1, z + i, 1, dustOptions);
+            player.spawnParticle(dustParticle, faceX, y + i, z, 1, dustOptions);
+            player.spawnParticle(dustParticle, faceX, y + i, z + 1, 1, dustOptions);
+        } else if (facing == BlockFace.EAST) {
+            double faceX = x + 1 - offset;
+            player.spawnParticle(dustParticle, faceX, y, z + i, 1, dustOptions);
+            player.spawnParticle(dustParticle, faceX, y + 1, z + i, 1, dustOptions);
+            player.spawnParticle(dustParticle, faceX, y + i, z, 1, dustOptions);
+            player.spawnParticle(dustParticle, faceX, y + i, z + 1, 1, dustOptions);
+        }
+    }
+    
+    /**
+     * Spawns fallback particles when dust options aren't available.
+     */
+    private void spawnFallbackParticle(Player player, BlockFace facing, double x, double y, double z,
+                                        double i, double offset, boolean valid) {
+        // Use different particles for valid/invalid
+        Particle particle;
+        try {
+            particle = valid ? Particle.valueOf("HAPPY_VILLAGER") : Particle.valueOf("FLAME");
+        } catch (IllegalArgumentException e) {
+            particle = Particle.values()[0];
+        }
+        
+        if (facing == BlockFace.NORTH) {
+            double faceZ = z + offset;
+            player.spawnParticle(particle, x + i, y, faceZ, 1, 0, 0, 0, 0);
+            player.spawnParticle(particle, x + i, y + 1, faceZ, 1, 0, 0, 0, 0);
+        } else if (facing == BlockFace.SOUTH) {
+            double faceZ = z + 1 - offset;
+            player.spawnParticle(particle, x + i, y, faceZ, 1, 0, 0, 0, 0);
+            player.spawnParticle(particle, x + i, y + 1, faceZ, 1, 0, 0, 0, 0);
+        } else if (facing == BlockFace.WEST) {
+            double faceX = x + offset;
+            player.spawnParticle(particle, faceX, y, z + i, 1, 0, 0, 0, 0);
+            player.spawnParticle(particle, faceX, y + 1, z + i, 1, 0, 0, 0, 0);
+        } else if (facing == BlockFace.EAST) {
+            double faceX = x + 1 - offset;
+            player.spawnParticle(particle, faceX, y, z + i, 1, 0, 0, 0, 0);
+            player.spawnParticle(particle, faceX, y + 1, z + i, 1, 0, 0, 0, 0);
         }
     }
     
@@ -371,17 +463,26 @@ public class MultiBlockMapHandler {
      * @return true if this was a multi-block map and was handled
      */
     public boolean onMapBreak(ItemFrame itemFrame, Player player) {
-        PersistentDataContainer pdc = itemFrame.getPersistentDataContainer();
-        Long groupId = pdc.get(groupIdKey, PersistentDataType.LONG);
+        // First check PDC on the item frame itself
+        PersistentDataContainer framePdc = itemFrame.getPersistentDataContainer();
+        Long groupId = framePdc.get(groupIdKey, PersistentDataType.LONG);
         
+        // If not on frame, check the item inside
         if (groupId == null || groupId <= 0) {
-            // Check by location
+            ItemStack frameItem = itemFrame.getItem();
+            if (frameItem != null) {
+                groupId = mapManager.getGroupIdFromItem(frameItem);
+            }
+        }
+        
+        // If still not found, check by location in our tracking map
+        if (groupId == null || groupId <= 0) {
             String locKey = getLocationKey(itemFrame.getLocation());
             groupId = placedMaps.get(locKey);
-            
-            if (groupId == null) {
-                return false; // Not a multi-block map
-            }
+        }
+        
+        if (groupId == null || groupId <= 0) {
+            return false; // Not a multi-block map
         }
         
         // Break all connected frames
@@ -398,41 +499,83 @@ public class MultiBlockMapHandler {
      */
     private void breakMultiBlockMap(long groupId, Location originLocation, Player player) {
         Set<String> blocks = groupBlocks.remove(groupId);
-        if (blocks == null || blocks.isEmpty()) {
-            return;
-        }
         
         World world = originLocation.getWorld();
         if (world == null) return;
         
         boolean droppedItem = false;
+        Set<ItemFrame> framesToRemove = new HashSet<>();
         
-        for (String locKey : blocks) {
-            placedMaps.remove(locKey);
-            
-            Location loc = parseLocationKey(locKey, world);
-            if (loc == null) continue;
-            
-            // Find and remove item frame at this location
-            for (Entity entity : world.getNearbyEntities(loc, 0.5, 0.5, 0.5)) {
-                if (entity instanceof ItemFrame) {
-                    ItemFrame frame = (ItemFrame) entity;
-                    
-                    // Remove the item without dropping
-                    ItemStack item = frame.getItem();
-                    frame.setItem(null);
-                    frame.remove();
-                    
-                    // Drop only one item for the whole multi-block map
-                    if (!droppedItem && item != null && item.getType() != Material.AIR) {
-                        // Create a special item representing the whole multi-block map
-                        ItemStack dropItem = createMultiBlockDropItem(groupId);
-                        if (dropItem != null) {
-                            world.dropItemNaturally(originLocation, dropItem);
-                            droppedItem = true;
-                        }
+        // If we have tracked blocks, use those
+        if (blocks != null && !blocks.isEmpty()) {
+            for (String locKey : blocks) {
+                placedMaps.remove(locKey);
+                
+                Location loc = parseLocationKey(locKey, world);
+                if (loc == null) continue;
+                
+                // Find item frame at this location
+                for (Entity entity : world.getNearbyEntities(loc.clone().add(0.5, 0.5, 0.5), 0.6, 0.6, 0.6)) {
+                    if (entity instanceof ItemFrame) {
+                        framesToRemove.add((ItemFrame) entity);
                     }
                 }
+            }
+        }
+        
+        // Also scan nearby area for any frames with this group ID that we might have missed
+        for (Entity entity : world.getNearbyEntities(originLocation, 32, 32, 32)) {
+            if (entity instanceof ItemFrame) {
+                ItemFrame frame = (ItemFrame) entity;
+                
+                // Check frame's PDC
+                PersistentDataContainer framePdc = frame.getPersistentDataContainer();
+                Long frameGroupId = framePdc.get(groupIdKey, PersistentDataType.LONG);
+                
+                if (frameGroupId != null && frameGroupId == groupId) {
+                    framesToRemove.add(frame);
+                    continue;
+                }
+                
+                // Check item's PDC
+                ItemStack frameItem = frame.getItem();
+                if (frameItem != null) {
+                    long itemGroupId = mapManager.getGroupIdFromItem(frameItem);
+                    if (itemGroupId == groupId) {
+                        framesToRemove.add(frame);
+                    }
+                }
+            }
+        }
+        
+        // Now remove all the frames
+        for (ItemFrame frame : framesToRemove) {
+            // Remove tracking
+            String locKey = getLocationKey(frame.getLocation());
+            placedMaps.remove(locKey);
+            
+            // Get item for potential drop
+            ItemStack item = frame.getItem();
+            
+            // Remove the item and frame
+            frame.setItem(null);
+            frame.remove();
+            
+            // Drop only one item for the whole multi-block map
+            if (!droppedItem && item != null && item.getType() != Material.AIR) {
+                ItemStack dropItem = createMultiBlockDropItem(groupId);
+                if (dropItem != null) {
+                    world.dropItemNaturally(originLocation, dropItem);
+                    droppedItem = true;
+                }
+            }
+        }
+        
+        // If nothing was dropped but we should drop something
+        if (!droppedItem && !framesToRemove.isEmpty()) {
+            ItemStack dropItem = createMultiBlockDropItem(groupId);
+            if (dropItem != null) {
+                world.dropItemNaturally(originLocation, dropItem);
             }
         }
     }
@@ -584,7 +727,12 @@ public class MultiBlockMapHandler {
                 // Spawn item frame
                 ItemFrame frame = world.spawn(loc, ItemFrame.class);
                 frame.setFacingDirection(facing);
-                frame.setFixed(true); // Prevent rotation
+                
+                // Try to set fixed (prevents rotation) - may not exist on older versions
+                try {
+                    frame.setFixed(true);
+                } catch (NoSuchMethodError ignored) {
+                }
                 
                 // Create and set map item
                 ItemStack mapItem = mapManager.createMapItem(map.getId());
@@ -597,14 +745,18 @@ public class MultiBlockMapHandler {
                 }
                 frame.setItem(mapItem);
                 
+                // Make invisible to show just the map
+                frame.setVisible(false);
+                
                 // Track placement
                 String locKey = getLocationKey(loc);
                 placedMaps.put(locKey, groupId);
                 groupBlocks.computeIfAbsent(groupId, k -> new HashSet<>()).add(locKey);
                 
-                // Store on entity
+                // Store group ID on the entity's PDC
                 PersistentDataContainer framePdc = frame.getPersistentDataContainer();
                 framePdc.set(groupIdKey, PersistentDataType.LONG, groupId);
+                framePdc.set(gridPositionKey, PersistentDataType.STRING, x + ":" + y);
                 
                 // Send map data to nearby players so it renders immediately
                 for (Player nearbyPlayer : nearbyPlayers) {

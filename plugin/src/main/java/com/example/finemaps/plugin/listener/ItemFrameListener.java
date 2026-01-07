@@ -65,25 +65,39 @@ public class ItemFrameListener implements Listener {
         
         ItemFrame frame = (ItemFrame) event.getEntity();
         
-        // Check if this is part of a multi-block map
+        // Check if the item in the frame is a multi-block map
+        ItemStack frameItem = frame.getItem();
+        if (frameItem == null || !mapManager.isStoredMap(frameItem)) {
+            return;
+        }
+        
+        long groupId = mapManager.getGroupIdFromItem(frameItem);
+        if (groupId <= 0) {
+            // Not a multi-block map, just a single map - allow normal break
+            return;
+        }
+        
+        // This is a multi-block map - we need to break all frames
+        event.setCancelled(true);
+        
+        // Determine the player who broke it
+        Player player = null;
         if (event instanceof HangingBreakByEntityEvent) {
             HangingBreakByEntityEvent byEntity = (HangingBreakByEntityEvent) event;
             Entity remover = byEntity.getRemover();
-            Player player = remover instanceof Player ? (Player) remover : null;
-            
-            if (multiBlockHandler.onMapBreak(frame, player)) {
-                // Multi-block map was broken - cancel default drop
-                event.setCancelled(true);
-            }
-        } else {
-            // Non-entity break (explosion, etc.)
-            if (multiBlockHandler.onMapBreak(frame, null)) {
-                event.setCancelled(true);
+            if (remover instanceof Player) {
+                player = (Player) remover;
             }
         }
+        
+        // Break all connected frames (run on next tick to avoid concurrent modification)
+        final Player finalPlayer = player;
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            multiBlockHandler.onMapBreak(frame, finalPlayer);
+        });
     }
 
-    @EventHandler(priority = EventPriority.NORMAL)
+    @EventHandler(priority = EventPriority.HIGH)
     public void onEntityDamage(EntityDamageByEntityEvent event) {
         if (!(event.getEntity() instanceof ItemFrame)) {
             return;
@@ -92,21 +106,27 @@ public class ItemFrameListener implements Listener {
         ItemFrame frame = (ItemFrame) event.getEntity();
         Entity damager = event.getDamager();
         
-        // Check if this frame has a stored map and is being hit by a player
+        // Check if this frame has a stored map
         ItemStack frameItem = frame.getItem();
-        if (frameItem != null && mapManager.isStoredMap(frameItem)) {
-            if (damager instanceof Player) {
-                Player player = (Player) damager;
-                
-                // Check if this is part of a multi-block map
-                long groupId = mapManager.getGroupIdFromItem(frameItem);
-                if (groupId > 0) {
-                    // Cancel the normal item frame behavior and handle multi-block break
-                    event.setCancelled(true);
-                    multiBlockHandler.onMapBreak(frame, player);
-                }
-            }
+        if (frameItem == null || !mapManager.isStoredMap(frameItem)) {
+            return;
         }
+        
+        // Check if this is part of a multi-block map
+        long groupId = mapManager.getGroupIdFromItem(frameItem);
+        if (groupId <= 0) {
+            return; // Single map, let normal behavior happen
+        }
+        
+        // This is a multi-block map - cancel and handle ourselves
+        event.setCancelled(true);
+        
+        Player player = (damager instanceof Player) ? (Player) damager : null;
+        
+        // Break all frames on next tick
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            multiBlockHandler.onMapBreak(frame, player);
+        });
     }
 
     @EventHandler(priority = EventPriority.NORMAL)
