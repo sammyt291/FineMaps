@@ -231,6 +231,19 @@ public class ItemFrameListener implements Listener {
                 plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
                     ItemStack newFrameItem = frame.getItem();
                     if (newFrameItem != null && mapManager.isStoredMap(newFrameItem)) {
+                        // Apply FineMaps orientation rules for floor/ceiling frames, so placed maps are consistent.
+                        if (frame.getFacing() == BlockFace.UP || frame.getFacing() == BlockFace.DOWN) {
+                            BlockFace desiredUp = getHorizontalFacing(player.getLocation().getYaw());
+                            org.bukkit.Rotation rot = rotationForFloorCeiling(desiredUp, frame.getFacing() == BlockFace.DOWN);
+                            try {
+                                frame.setRotation(rot);
+                            } catch (Throwable ignored) {
+                            }
+                            try {
+                                frame.setRotation(rot);
+                            } catch (Throwable ignored) {
+                            }
+                        }
                         multiBlockHandler.onMapPlace(frame, newFrameItem, player);
                     }
                 }, 1L);
@@ -304,7 +317,7 @@ public class ItemFrameListener implements Listener {
             ChatColor.GRAY + " | quarterTurns(ordinal%4)=" + ChatColor.WHITE + quarterTurns);
 
         if (facing == BlockFace.UP) {
-            player.sendMessage(ChatColor.YELLOW + "Map top dir (FLOOR, NONE baseline≈EAST): " + ChatColor.WHITE + floorTop);
+            player.sendMessage(ChatColor.YELLOW + "Map top dir (FLOOR, NONE baseline≈NORTH): " + ChatColor.WHITE + floorTop);
         } else if (facing == BlockFace.DOWN) {
             player.sendMessage(ChatColor.YELLOW + "Map top dir (CEILING, NONE baseline≈SOUTH): " + ChatColor.WHITE + "cw-from-below=" + ceilingTopCwFromBelow +
                 ChatColor.GRAY + " | cw-from-above=" + ChatColor.WHITE + ceilingTopCwFromAbove);
@@ -340,17 +353,17 @@ public class ItemFrameListener implements Listener {
     }
 
     /**
-     * Floor frames (facing UP): per user observation, NONE makes map-top point EAST.
+     * Floor frames (facing UP): per user observation, NONE makes map-top point NORTH.
      * Each effective quarter turn rotates 90° clockwise around +Y when viewed from above.
      */
     private BlockFace topDirectionOnFloor(int quarterTurns) {
         if (quarterTurns < 0) return null;
         switch (quarterTurns & 3) {
-            case 0: return BlockFace.EAST;
-            case 1: return BlockFace.SOUTH;
-            case 2: return BlockFace.WEST;
-            case 3: return BlockFace.NORTH;
-            default: return BlockFace.EAST;
+            case 0: return BlockFace.NORTH;
+            case 1: return BlockFace.EAST;
+            case 2: return BlockFace.SOUTH;
+            case 3: return BlockFace.WEST;
+            default: return BlockFace.NORTH;
         }
     }
 
@@ -382,6 +395,52 @@ public class ItemFrameListener implements Listener {
             case 2: return BlockFace.NORTH;
             case 3: return BlockFace.WEST;
             default: return BlockFace.SOUTH;
+        }
+    }
+
+    private BlockFace getHorizontalFacing(float yaw) {
+        float y = yaw % 360.0f;
+        if (y < 0) y += 360.0f;
+        // Minecraft yaw: 0 = South, 90 = West, 180 = North, 270 = East
+        if (y >= 315 || y < 45) return BlockFace.SOUTH;
+        if (y < 135) return BlockFace.WEST;
+        if (y < 225) return BlockFace.NORTH;
+        return BlockFace.EAST;
+    }
+
+    /**
+     * Same placement rotation rules used by FineMaps frame spawning:
+     * - Maps visually rotate in 90° steps; we use rotation.ordinal()%4.
+     * - Floor: NONE => top=NORTH (N->E->S->W)
+     * - Ceiling: NONE => top=SOUTH when viewed from below (S->W->N->E)
+     */
+    private org.bukkit.Rotation rotationForFloorCeiling(BlockFace desiredUp, boolean ceiling) {
+        if (desiredUp == null) desiredUp = BlockFace.NORTH;
+        int quarterTurns;
+        if (!ceiling) {
+            switch (desiredUp) {
+                case NORTH: quarterTurns = 0; break;
+                case EAST: quarterTurns = 1; break;
+                case SOUTH: quarterTurns = 2; break;
+                case WEST: quarterTurns = 3; break;
+                default: quarterTurns = 0; break;
+            }
+        } else {
+            switch (desiredUp) {
+                case SOUTH: quarterTurns = 0; break;
+                case WEST: quarterTurns = 1; break;
+                case NORTH: quarterTurns = 2; break;
+                case EAST: quarterTurns = 3; break;
+                default: quarterTurns = 0; break;
+            }
+        }
+
+        switch (quarterTurns & 3) {
+            case 0: return org.bukkit.Rotation.NONE;
+            case 1: return org.bukkit.Rotation.CLOCKWISE_45;
+            case 2: return org.bukkit.Rotation.CLOCKWISE;
+            case 3: return org.bukkit.Rotation.CLOCKWISE_135;
+            default: return org.bukkit.Rotation.NONE;
         }
     }
 }
