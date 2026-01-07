@@ -1214,8 +1214,8 @@ public class MultiBlockMapHandler {
         switch (facing) {
             case NORTH: return BlockFace.WEST;  // Viewer looking north, their right is west
             case SOUTH: return BlockFace.EAST;  // Viewer looking south, their right is east
-            case EAST: return BlockFace.NORTH;  // Viewer looking east, their right is north
-            case WEST: return BlockFace.SOUTH;  // Viewer looking west, their right is south
+            case EAST: return BlockFace.SOUTH;  // Viewer looking east, their right is south
+            case WEST: return BlockFace.NORTH;  // Viewer looking west, their right is north
             default: return BlockFace.WEST;
         }
     }
