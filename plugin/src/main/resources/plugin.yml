@@ -6,11 +6,8 @@ description: Database-backed map storage system with unlimited map IDs
 author: MapDB Team
 website: https://github.com/example/mapdb
 
-depend:
-  - ProtocolLib
-
 softdepend:
-  - RedLib
+  - ProtocolLib
 
 folia-supported: true
 

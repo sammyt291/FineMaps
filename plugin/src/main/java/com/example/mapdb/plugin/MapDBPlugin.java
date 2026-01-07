@@ -114,15 +114,12 @@ public class MapDBPlugin extends JavaPlugin {
     }
 
     private boolean checkDependencies() {
-        // Check for ProtocolLib
+        // Check for ProtocolLib (optional but recommended)
         if (getServer().getPluginManager().getPlugin("ProtocolLib") == null) {
-            getLogger().severe("ProtocolLib is required but not found!");
-            return false;
-        }
-        
-        // Check for RedLib (optional but recommended)
-        if (getServer().getPluginManager().getPlugin("RedLib") == null) {
-            getLogger().warning("RedLib not found - using built-in config management");
+            getLogger().warning("ProtocolLib not found - running in basic mode without virtual ID system");
+            getLogger().warning("Install ProtocolLib for unlimited map support");
+        } else {
+            getLogger().info("ProtocolLib found - virtual ID system enabled");
         }
         
         return true;

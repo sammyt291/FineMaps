@@ -28,8 +28,29 @@ public final class NMSAdapterFactory {
             logger.info("Folia detected - using Folia-compatible adapter");
         }
 
-        // Use ProtocolLib-based adapter for broad compatibility
-        return new ProtocolLibAdapter(logger, version, isFolia);
+        // Check if ProtocolLib is available
+        if (isProtocolLibAvailable()) {
+            logger.info("ProtocolLib found - using ProtocolLib adapter for full functionality");
+            return new ProtocolLibAdapter(logger, version, isFolia);
+        }
+        
+        // Fall back to universal Bukkit adapter (basic mode, no version-specific code)
+        logger.info("ProtocolLib not found - using Bukkit adapter (basic mode)");
+        return new BukkitNMSAdapter(logger);
+    }
+    
+    /**
+     * Checks if ProtocolLib is available.
+     *
+     * @return true if ProtocolLib is loaded
+     */
+    public static boolean isProtocolLibAvailable() {
+        try {
+            Class.forName("com.comphenix.protocol.ProtocolLibrary");
+            return org.bukkit.Bukkit.getPluginManager().getPlugin("ProtocolLib") != null;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
     }
 
     /**
