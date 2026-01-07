@@ -47,7 +47,7 @@ ProtocolLib is **optional** but enables the virtual ID system for efficient map 
 | Multi-Block Maps | ✅ Full | ✅ Full |
 | Image Import | ✅ Full | ✅ Full |
 
-**Without ProtocolLib**: All versions from 1.12.2 to 1.21.x are supported. The database can store unlimited maps, but only ~32,000 can be actively rendered at once (using real Minecraft map IDs).
+**Without ProtocolLib**: All versions from 1.12.2+ are supported using a universal Bukkit adapter with runtime reflection. No version-specific code needed - the plugin automatically detects server capabilities. The database can store unlimited maps, but only ~32,000 can be actively rendered at once (using real Minecraft map IDs).
 
 ## Installation
 
