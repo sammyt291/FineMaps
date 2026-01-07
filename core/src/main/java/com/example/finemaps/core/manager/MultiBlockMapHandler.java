@@ -427,15 +427,20 @@ public class MultiBlockMapHandler {
      * Computes the rotation needed for item frames placed on the floor/ceiling so that
      * the image "top" points toward the desired direction.
      *
-     * Assumes the base (Rotation.NONE) has the map "top" pointing NORTH.
+     * Assumes the base (Rotation.NONE) has the map "top" pointing SOUTH.
+     *
+     * Note: For floor/ceiling item frames, Bukkit's rotation "0°" aligns with Minecraft's
+     * yaw "0°" baseline (SOUTH). From that baseline:
+     * - CLOCKWISE is +90° (SOUTH -> WEST -> NORTH -> EAST)
+     * - COUNTER_CLOCKWISE is -90°
      */
     private Rotation rotationForFloorCeiling(BlockFace desiredUp, boolean ceiling) {
         Rotation rot;
         switch (desiredUp) {
-            case NORTH: rot = Rotation.NONE; break;
-            case EAST: rot = Rotation.CLOCKWISE; break;
-            case SOUTH: rot = Rotation.FLIPPED; break;
-            case WEST: rot = Rotation.COUNTER_CLOCKWISE; break;
+            case SOUTH: rot = Rotation.NONE; break;
+            case WEST: rot = Rotation.CLOCKWISE; break;
+            case NORTH: rot = Rotation.FLIPPED; break;
+            case EAST: rot = Rotation.COUNTER_CLOCKWISE; break;
             default: rot = Rotation.NONE; break;
         }
 
