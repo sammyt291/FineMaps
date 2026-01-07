@@ -36,7 +36,8 @@ tasks {
         
         // Relocate shaded dependencies to avoid conflicts
         relocate("com.zaxxer.hikari", "com.example.finemaps.libs.hikari")
-        relocate("org.sqlite", "com.example.finemaps.libs.sqlite")
+        // Note: sqlite-jdbc cannot be relocated because it uses JNI native libraries
+        // that are bound to the original class names. Relocating breaks native method binding.
         relocate("redempt.redlib", "com.example.finemaps.libs.redlib")
     }
     
