@@ -445,9 +445,9 @@ public class ItemFrameListener implements Listener {
         } else {
             switch (desiredUp) {
                 case SOUTH: quarterTurns = 0; break;
-                case WEST: quarterTurns = 1; break;
+                case EAST: quarterTurns = 1; break;
                 case NORTH: quarterTurns = 2; break;
-                case EAST: quarterTurns = 3; break;
+                case WEST: quarterTurns = 3; break;
                 default: quarterTurns = 0; break;
             }
         }

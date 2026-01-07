@@ -450,12 +450,13 @@ public class MultiBlockMapHandler {
             }
         } else {
             // CEILING (facing DOWN): NONE => top=SOUTH (as seen from below),
-            // then +1 rotates clockwise from below: S -> W -> N -> E
+            // then +1 advances like clockwise when viewed from ABOVE: S -> E -> N -> W
+            // (empirically matches vanilla map rendering in ceiling frames)
             switch (desiredUp) {
                 case SOUTH: quarterTurns = 0; break;
-                case WEST: quarterTurns = 1; break;
+                case EAST: quarterTurns = 1; break;
                 case NORTH: quarterTurns = 2; break;
-                case EAST: quarterTurns = 3; break;
+                case WEST: quarterTurns = 3; break;
                 default: quarterTurns = 0; break;
             }
         }
