@@ -451,11 +451,13 @@ public class BukkitNMSAdapter implements NMSAdapter {
                 Class<?> vector3fClass = Class.forName("org.joml.Vector3f");
                 Class<?> quaternionfClass = Class.forName("org.joml.Quaternionf");
                 
-                // Create a small scale transformation (0.02 blocks = thin outline)
+                // Important: BlockDisplay models are defined in [0..1] space.
+                // If we only scale, the block expands from the local origin (corner) and the display appears offset.
+                // Translate by -0.5 * scale on each axis to keep the scaled shape centered on the entity location.
                 Object scale = vector3fClass.getConstructor(float.class, float.class, float.class)
                     .newInstance(scaleX, scaleY, scaleZ);
                 Object translation = vector3fClass.getConstructor(float.class, float.class, float.class)
-                    .newInstance(0.0f, 0.0f, 0.0f);
+                    .newInstance(-scaleX / 2.0f, -scaleY / 2.0f, -scaleZ / 2.0f);
                 Object leftRotation = quaternionfClass.getConstructor().newInstance();
                 Object rightRotation = quaternionfClass.getConstructor().newInstance();
                 
