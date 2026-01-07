@@ -213,10 +213,19 @@ Large images can be split into multiple 128x128 maps:
 ```bash
 git clone https://github.com/example/mapdb.git
 cd mapdb
-mvn clean package
+./gradlew build
 ```
 
-The built JAR will be in `plugin/target/mapdb-plugin-1.0.0.jar`.
+The built JAR will be in `plugin/build/libs/MapDB-1.0.0.jar`.
+
+### Gradle Tasks
+
+| Task | Description |
+|------|-------------|
+| `./gradlew build` | Build the plugin JAR |
+| `./gradlew shadowJar` | Build shaded JAR with dependencies |
+| `./gradlew clean` | Clean build directories |
+| `./gradlew :api:jar` | Build only the API module |
 
 ## Supported Versions
 

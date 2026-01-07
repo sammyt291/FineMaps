@@ -1,5 +1,5 @@
 name: MapDB
-version: ${project.version}
+version: ${version}
 main: com.example.mapdb.plugin.MapDBPlugin
 api-version: "1.13"
 description: Database-backed map storage system with unlimited map IDs
