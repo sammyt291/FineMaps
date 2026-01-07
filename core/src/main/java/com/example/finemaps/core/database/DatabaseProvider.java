@@ -182,4 +182,31 @@ public interface DatabaseProvider {
      * @return CompletableFuture containing list of map IDs
      */
     CompletableFuture<List<Long>> getStaleMapIds(long beforeTimestamp);
+
+    /**
+     * Gets a multi-block map group by its name (stored in metadata).
+     *
+     * @param pluginId The plugin ID
+     * @param name The art name
+     * @return CompletableFuture containing the group ID if found
+     */
+    CompletableFuture<Optional<Long>> getGroupByName(String pluginId, String name);
+
+    /**
+     * Gets a single map by its name (stored in metadata).
+     *
+     * @param pluginId The plugin ID
+     * @param name The art name
+     * @return CompletableFuture containing the map ID if found
+     */
+    CompletableFuture<Optional<Long>> getMapByName(String pluginId, String name);
+
+    /**
+     * Checks if an art name is already in use.
+     *
+     * @param pluginId The plugin ID
+     * @param name The art name to check
+     * @return CompletableFuture containing true if name exists
+     */
+    CompletableFuture<Boolean> isNameTaken(String pluginId, String name);
 }

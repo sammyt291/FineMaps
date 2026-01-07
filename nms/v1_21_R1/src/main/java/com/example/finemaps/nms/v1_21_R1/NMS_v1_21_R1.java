@@ -95,6 +95,39 @@ public class NMS_v1_21_R1 implements NMSAdapter {
     @Override public boolean supportsBlockDisplays() { return true; }
 
     @Override
+    public int spawnPreviewBlockDisplay(Location location, boolean valid) {
+        try {
+            World world = location.getWorld();
+            if (world == null) return -1;
+            org.bukkit.entity.BlockDisplay display = world.spawn(location, org.bukkit.entity.BlockDisplay.class, entity -> {
+                Material blockMaterial = valid ? Material.LIME_STAINED_GLASS : Material.RED_STAINED_GLASS;
+                entity.setBlock(blockMaterial.createBlockData());
+                entity.setBillboard(org.bukkit.entity.Display.Billboard.FIXED);
+                entity.setGlowing(true);
+                // Set scale to make it thin (like an outline)
+                org.bukkit.util.Transformation t = entity.getTransformation();
+                entity.setTransformation(new org.bukkit.util.Transformation(
+                    t.getTranslation(),
+                    t.getLeftRotation(),
+                    new org.joml.Vector3f(1.0f, 1.0f, 0.02f),
+                    t.getRightRotation()
+                ));
+            });
+            int displayId = nextDisplayId++;
+            // Store as ItemDisplay since we don't have a separate map
+            return displayId;
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Failed to spawn preview block display", e);
+            return -1;
+        }
+    }
+
+    @Override
+    public void removePreviewDisplay(int entityId) {
+        removeDisplay(entityId);
+    }
+
+    @Override
     public void showParticleOutline(Player player, Location location) {
         World world = location.getWorld();
         if (world == null) return;

@@ -79,6 +79,25 @@ public class NMS_v1_19_R3 implements NMSAdapter {
     @Override public boolean supportsBlockDisplays() { return true; }
 
     @Override
+    public int spawnPreviewBlockDisplay(Location location, boolean valid) {
+        try {
+            World world = location.getWorld();
+            if (world == null) return -1;
+            org.bukkit.entity.BlockDisplay display = world.spawn(location, org.bukkit.entity.BlockDisplay.class, entity -> {
+                Material blockMaterial = valid ? Material.LIME_STAINED_GLASS : Material.RED_STAINED_GLASS;
+                entity.setBlock(blockMaterial.createBlockData());
+                entity.setBillboard(org.bukkit.entity.Display.Billboard.FIXED);
+                entity.setGlowing(true);
+            });
+            int displayId = nextDisplayId++;
+            return displayId;
+        } catch (Exception e) { return -1; }
+    }
+
+    @Override
+    public void removePreviewDisplay(int entityId) { removeDisplay(entityId); }
+
+    @Override
     public void showParticleOutline(Player player, Location location) {
         World world = location.getWorld();
         if (world == null) return;

@@ -52,6 +52,8 @@ public class NMS_v1_13_R2 implements NMSAdapter {
     @Override public int spawnMapDisplay(Location location, int mapId) { return -1; }
     @Override public void removeDisplay(int entityId) {}
     @Override public boolean supportsBlockDisplays() { return false; }
+    @Override public int spawnPreviewBlockDisplay(Location location, boolean valid) { return -1; }
+    @Override public void removePreviewDisplay(int entityId) {}
 
     @Override
     public void showParticleOutline(Player player, Location location) {

@@ -140,15 +140,47 @@ public class MapManager implements FineMapsAPI {
         return createMap(pluginId, pixels);
     }
 
+    /**
+     * Creates a map from an image with an art name.
+     *
+     * @param pluginId The plugin ID
+     * @param image The image
+     * @param dither Whether to use dithering
+     * @param artName The art name to store as metadata
+     * @return CompletableFuture containing the created map
+     */
+    public CompletableFuture<StoredMap> createMapFromImageWithName(String pluginId, BufferedImage image, 
+                                                                     boolean dither, String artName) {
+        byte[] pixels = imageProcessor.processSingleMap(image, dither);
+        return database.createMap(pluginId, null, pixels, null, 0, 0, 0, artName);
+    }
+
     @Override
     public CompletableFuture<MultiBlockMap> createMultiBlockMap(String pluginId, BufferedImage image,
                                                                   int widthBlocks, int heightBlocks, boolean dither) {
+        return createMultiBlockMapWithName(pluginId, image, widthBlocks, heightBlocks, dither, null);
+    }
+
+    /**
+     * Creates a multi-block map with an art name.
+     *
+     * @param pluginId The plugin ID
+     * @param image The image
+     * @param widthBlocks Width in blocks
+     * @param heightBlocks Height in blocks
+     * @param dither Whether to use dithering
+     * @param artName The art name to store as metadata
+     * @return CompletableFuture containing the created multi-block map
+     */
+    public CompletableFuture<MultiBlockMap> createMultiBlockMapWithName(String pluginId, BufferedImage image,
+                                                                          int widthBlocks, int heightBlocks, 
+                                                                          boolean dither, String artName) {
         return CompletableFuture.supplyAsync(() -> {
             byte[][] pixelArrays = imageProcessor.processImage(image, widthBlocks, heightBlocks, dither);
             return pixelArrays;
         }).thenCompose(pixelArrays -> {
-            // Create group first
-            return database.createMultiBlockGroup(pluginId, null, widthBlocks, heightBlocks, null)
+            // Create group first with art name as metadata
+            return database.createMultiBlockGroup(pluginId, null, widthBlocks, heightBlocks, artName)
                 .thenCompose(groupId -> {
                     // Create all maps in the group
                     List<CompletableFuture<StoredMap>> mapFutures = new ArrayList<>();
@@ -174,7 +206,7 @@ public class MapManager implements FineMapsAPI {
                             }
                             return new MultiBlockMap(groupId, pluginId, null, 
                                                     widthBlocks, heightBlocks, maps, 
-                                                    System.currentTimeMillis(), null);
+                                                    System.currentTimeMillis(), artName);
                         });
                 });
         });
@@ -289,11 +321,36 @@ public class MapManager implements FineMapsAPI {
 
     @Override
     public void giveMapToPlayer(Player player, long mapId) {
+        giveMapToPlayerWithName(player, mapId, null);
+    }
+
+    /**
+     * Gives a map item to a player with an art name displayed.
+     *
+     * @param player The player
+     * @param mapId The map ID
+     * @param artName The art name to display (or null to use default)
+     */
+    public void giveMapToPlayerWithName(Player player, long mapId, String artName) {
         // Ensure map data is loaded first
         getMapData(mapId).thenAccept(optData -> {
             Bukkit.getScheduler().runTask(plugin, () -> {
                 // Create the map item (this will also initialize the MapView)
                 ItemStack item = createMapItem(mapId);
+                
+                // Add art name to display if provided
+                if (artName != null) {
+                    ItemMeta meta = item.getItemMeta();
+                    if (meta != null) {
+                        meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map: " + artName);
+                        List<String> lore = new ArrayList<>();
+                        lore.add(org.bukkit.ChatColor.GRAY + "Art: " + artName);
+                        lore.add(org.bukkit.ChatColor.GRAY + "Single block map");
+                        meta.setLore(lore);
+                        item.setItemMeta(meta);
+                    }
+                }
+                
                 player.getInventory().addItem(item);
                 
                 // Force update the player's inventory to refresh the item display
@@ -310,6 +367,17 @@ public class MapManager implements FineMapsAPI {
 
     @Override
     public void giveMultiBlockMapToPlayer(Player player, long groupId) {
+        giveMultiBlockMapToPlayerWithName(player, groupId, null);
+    }
+
+    /**
+     * Gives a multi-block map item to a player with an art name displayed.
+     *
+     * @param player The player
+     * @param groupId The group ID
+     * @param artName The art name to display (or null to use default)
+     */
+    public void giveMultiBlockMapToPlayerWithName(Player player, long groupId, String artName) {
         // Pre-load all map data first, then give the item
         getMultiBlockMap(groupId).thenAccept(optMap -> {
             if (!optMap.isPresent()) {
@@ -321,6 +389,9 @@ public class MapManager implements FineMapsAPI {
             
             MultiBlockMap multiMap = optMap.get();
             
+            // Use art name from metadata if not provided
+            String displayName = artName != null ? artName : multiMap.getMetadata();
+            
             // Load all individual maps' pixel data
             List<CompletableFuture<Void>> loadFutures = new ArrayList<>();
             for (StoredMap map : multiMap.getMaps()) {
@@ -331,10 +402,11 @@ public class MapManager implements FineMapsAPI {
             }
             
             // Wait for all to load, then give item on main thread
+            final String finalDisplayName = displayName;
             CompletableFuture.allOf(loadFutures.toArray(new CompletableFuture[0])).thenRun(() -> {
                 Bukkit.getScheduler().runTask(plugin, () -> {
-                    // Create the multi-block map item
-                    ItemStack item = createMultiBlockMapItem(groupId);
+                    // Create the multi-block map item with name
+                    ItemStack item = createMultiBlockMapItemWithName(groupId, finalDisplayName);
                     if (item != null) {
                         player.getInventory().addItem(item);
                         player.updateInventory();
@@ -360,12 +432,26 @@ public class MapManager implements FineMapsAPI {
      * @return The item, or null if not found
      */
     public ItemStack createMultiBlockMapItem(long groupId) {
+        return createMultiBlockMapItemWithName(groupId, null);
+    }
+
+    /**
+     * Creates a single item representing an entire multi-block map with an art name.
+     *
+     * @param groupId The group ID
+     * @param artName The art name to display (or null to use metadata)
+     * @return The item, or null if not found
+     */
+    public ItemStack createMultiBlockMapItemWithName(long groupId, String artName) {
         Optional<MultiBlockMap> optMap = getMultiBlockMap(groupId).join();
         if (!optMap.isPresent()) {
             return null;
         }
         
         MultiBlockMap multiMap = optMap.get();
+        
+        // Use art name from parameter or fall back to metadata
+        String displayName = artName != null ? artName : multiMap.getMetadata();
         
         // Initialize MapViews for ALL maps in the group (so they render when placed)
         for (StoredMap map : multiMap.getMaps()) {
@@ -397,14 +483,21 @@ public class MapManager implements FineMapsAPI {
             pdc.set(new NamespacedKey(plugin, "finemaps_width"), PersistentDataType.INTEGER, multiMap.getWidth());
             pdc.set(new NamespacedKey(plugin, "finemaps_height"), PersistentDataType.INTEGER, multiMap.getHeight());
             
-            // Set display name showing dimensions
-            meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map (" + multiMap.getWidth() + "x" + multiMap.getHeight() + ")");
+            // Set display name showing art name and dimensions
+            if (displayName != null) {
+                meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map: " + displayName + 
+                                   org.bukkit.ChatColor.GRAY + " (" + multiMap.getWidth() + "x" + multiMap.getHeight() + ")");
+            } else {
+                meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map (" + multiMap.getWidth() + "x" + multiMap.getHeight() + ")");
+            }
             
             // Add lore with info
             List<String> lore = new ArrayList<>();
+            if (displayName != null) {
+                lore.add(org.bukkit.ChatColor.GRAY + "Art: " + displayName);
+            }
             lore.add(org.bukkit.ChatColor.GRAY + "Multi-block map");
             lore.add(org.bukkit.ChatColor.GRAY + "Size: " + multiMap.getWidth() + "x" + multiMap.getHeight() + " blocks");
-            lore.add(org.bukkit.ChatColor.GRAY + "Group ID: " + groupId);
             lore.add("");
             lore.add(org.bukkit.ChatColor.YELLOW + "Look at a wall to see preview");
             lore.add(org.bukkit.ChatColor.YELLOW + "Right-click to place");
@@ -662,5 +755,47 @@ public class MapManager implements FineMapsAPI {
      */
     public MapViewManager getMapViewManager() {
         return mapViewManager;
+    }
+
+    /**
+     * Gets a multi-block map group by its art name.
+     *
+     * @param pluginId The plugin ID
+     * @param name The art name
+     * @return CompletableFuture containing the group ID if found
+     */
+    public CompletableFuture<Optional<Long>> getGroupByName(String pluginId, String name) {
+        return database.getGroupByName(pluginId, name);
+    }
+
+    /**
+     * Gets a single map by its art name.
+     *
+     * @param pluginId The plugin ID
+     * @param name The art name
+     * @return CompletableFuture containing the map ID if found
+     */
+    public CompletableFuture<Optional<Long>> getMapByName(String pluginId, String name) {
+        return database.getMapByName(pluginId, name);
+    }
+
+    /**
+     * Checks if an art name is already in use.
+     *
+     * @param pluginId The plugin ID
+     * @param name The art name to check
+     * @return CompletableFuture containing true if name exists
+     */
+    public CompletableFuture<Boolean> isNameTaken(String pluginId, String name) {
+        return database.isNameTaken(pluginId, name);
+    }
+
+    /**
+     * Gets the database provider.
+     *
+     * @return The database provider
+     */
+    public DatabaseProvider getDatabase() {
+        return database;
     }
 }
