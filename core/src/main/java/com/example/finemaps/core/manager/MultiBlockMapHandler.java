@@ -1222,22 +1222,21 @@ public class MultiBlockMapHandler {
     }
 
     /**
-     * Gets the right direction from the VIEWER's perspective when looking at a map.
+     * Gets the direction we advance X+ for wall placement.
      * 
-     * When a map faces NORTH (the map is on a wall, pointing north toward the viewer),
-     * the viewer is standing to the south looking north.
-     * The viewer's RIGHT is WEST (not EAST).
-     * 
-     * This ensures that column 0 (left side of the image) appears on the left
-     * side of the placed map from the viewer's perspective.
+     * Note: Map rendering in item frames effectively mirrors left/right on walls across versions,
+     * so for multi-block composition we treat X+ as the VIEWER'S LEFT (not right).
+     *
+     * This ensures that the stored tile grid (x=0..w-1 from the source image) lines up
+     * visually left-to-right when placed on a wall.
      */
     private BlockFace getRight(BlockFace facing) {
         switch (facing) {
-            case NORTH: return BlockFace.WEST;  // Viewer looking north, their right is west
-            case SOUTH: return BlockFace.EAST;  // Viewer looking south, their right is east
-            case EAST: return BlockFace.SOUTH;  // Viewer looking east, their right is south
-            case WEST: return BlockFace.NORTH;  // Viewer looking west, their right is north
-            default: return BlockFace.WEST;
+            case NORTH: return BlockFace.EAST;  // Viewer looking south, their left is east
+            case SOUTH: return BlockFace.WEST;  // Viewer looking north, their left is west
+            case EAST: return BlockFace.NORTH;  // Viewer looking west, their left is north
+            case WEST: return BlockFace.SOUTH;  // Viewer looking east, their left is south
+            default: return BlockFace.EAST;
         }
     }
 
