@@ -186,13 +186,10 @@ public class FineMapsPlugin extends JavaPlugin {
     }
 
     private void registerCommands() {
-        FineMapsCommand command = new FineMapsCommand(this);
+        DebugCommand debugCommand = new DebugCommand(this);
+        FineMapsCommand command = new FineMapsCommand(this, debugCommand);
         getCommand("finemaps").setExecutor(command);
         getCommand("finemaps").setTabCompleter(command);
-
-        DebugCommand debugCommand = new DebugCommand(this);
-        getCommand("debug").setExecutor(debugCommand);
-        getCommand("debug").setTabCompleter(debugCommand);
     }
 
     private void startCleanupTask() {

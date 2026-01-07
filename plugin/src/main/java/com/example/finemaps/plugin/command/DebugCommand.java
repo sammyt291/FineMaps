@@ -11,10 +11,7 @@ import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
-import org.bukkit.command.Command;
-import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
-import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
@@ -29,15 +26,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Debug/load-testing command suite.
  *
- * /debug seed <num>
+ * /finemaps debug seed <num>
  *   - Creates <num> maps in DB with unique, sequential names
  *
- * /debug placemaps <mapsPerSecond>
+ * /finemaps debug placemaps <mapsPerSecond>
  *   - Builds a moving 2x2 wall of map item frames at world max height - 5
  *   - Teleports the player along while continuously placing maps in front
  *   - Iterates through existing DB maps for plugin_id="debug" (no seed required)
+ *
+ * /finemaps debug inspect [on|off|toggle]
+ *   - Toggle stick right-click debug output on item frames
  */
-public class DebugCommand implements CommandExecutor, TabCompleter {
+public class DebugCommand {
 
     private static final String DEBUG_PLUGIN_ID = "debug";
     private static final int WALL_WIDTH = 2;
@@ -61,8 +61,13 @@ public class DebugCommand implements CommandExecutor, TabCompleter {
         this.database = plugin.getDatabase();
     }
 
-    @Override
-    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+    /**
+     * Handle {@code /<label> debug <sub...>} invocation from {@link FineMapsCommand}.
+     *
+     * @param baseLabel label path excluding the leading '/', e.g. {@code "finemaps debug"} or {@code "fm debug"}
+     * @param args debug sub-args (everything after "debug")
+     */
+    public boolean handle(CommandSender sender, String baseLabel, String[] args) {
         if (!(sender instanceof Player player)) {
             sender.sendMessage(ChatColor.RED + "This command can only be used in-game.");
             return true;
@@ -73,28 +78,31 @@ public class DebugCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length == 0) {
-            sendUsage(sender);
+            sendUsage(sender, baseLabel);
             return true;
         }
 
         switch (args[0].toLowerCase(Locale.ROOT)) {
             case "seed":
-                return handleSeed(player, args);
+                return handleSeed(player, baseLabel, args);
             case "placemaps":
-                return handlePlaceMaps(player, args);
+                return handlePlaceMaps(player, baseLabel, args);
             case "stop":
                 return handleStop(player);
+            case "inspect":
+                return handleInspect(player, baseLabel, args);
             default:
-                sendUsage(sender);
+                sendUsage(sender, baseLabel);
                 return true;
         }
     }
 
-    private void sendUsage(CommandSender sender) {
+    private void sendUsage(CommandSender sender, String baseLabel) {
         sender.sendMessage(ChatColor.GOLD + "=== Debug Commands ===");
-        sender.sendMessage(ChatColor.YELLOW + "/debug seed <num>" + ChatColor.GRAY + " - Seed <num> unique maps into DB");
-        sender.sendMessage(ChatColor.YELLOW + "/debug placemaps <mapsPerSecond>" + ChatColor.GRAY + " - Place 2x2 walls continuously");
-        sender.sendMessage(ChatColor.YELLOW + "/debug stop" + ChatColor.GRAY + " - Stop active placement task");
+        sender.sendMessage(ChatColor.YELLOW + "/" + baseLabel + " seed <num>" + ChatColor.GRAY + " - Seed <num> unique maps into DB");
+        sender.sendMessage(ChatColor.YELLOW + "/" + baseLabel + " placemaps <mapsPerSecond>" + ChatColor.GRAY + " - Place 2x2 walls continuously");
+        sender.sendMessage(ChatColor.YELLOW + "/" + baseLabel + " stop" + ChatColor.GRAY + " - Stop active placement task");
+        sender.sendMessage(ChatColor.YELLOW + "/" + baseLabel + " inspect [on|off|toggle]" + ChatColor.GRAY + " - Toggle stick right-click frame inspection");
     }
 
     private boolean handleStop(Player player) {
@@ -109,9 +117,43 @@ public class DebugCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
-    private boolean handleSeed(Player player, String[] args) {
+    private boolean handleInspect(Player player, String baseLabel, String[] args) {
+        boolean enabled;
+        if (args.length >= 2) {
+            String mode = args[1].toLowerCase(Locale.ROOT);
+            switch (mode) {
+                case "on":
+                case "enable":
+                    plugin.setDebug(player, true);
+                    enabled = true;
+                    break;
+                case "off":
+                case "disable":
+                    plugin.setDebug(player, false);
+                    enabled = false;
+                    break;
+                case "toggle":
+                    enabled = plugin.toggleDebug(player);
+                    break;
+                default:
+                    player.sendMessage(ChatColor.RED + "Usage: /" + baseLabel + " inspect [on|off|toggle]");
+                    return true;
+            }
+        } else {
+            enabled = plugin.toggleDebug(player);
+        }
+
+        player.sendMessage(ChatColor.YELLOW + "FineMaps inspect: " +
+            (enabled ? ChatColor.GREEN + "ON" : ChatColor.RED + "OFF"));
+        if (enabled) {
+            player.sendMessage(ChatColor.GRAY + "Right-click an item frame with a stick to print its info.");
+        }
+        return true;
+    }
+
+    private boolean handleSeed(Player player, String baseLabel, String[] args) {
         if (args.length < 2) {
-            player.sendMessage(ChatColor.RED + "Usage: /debug seed <num>");
+            player.sendMessage(ChatColor.RED + "Usage: /" + baseLabel + " seed <num>");
             return true;
         }
 
@@ -163,7 +205,7 @@ public class DebugCommand implements CommandExecutor, TabCompleter {
             Bukkit.getScheduler().runTask(plugin, () -> {
                 long ms = System.currentTimeMillis() - startedAt;
                 player.sendMessage(ChatColor.GREEN + "Seed complete: " + num + " maps in " + ms + "ms");
-                player.sendMessage(ChatColor.GRAY + "Ready for: " + ChatColor.YELLOW + "/debug placemaps <mapsPerSecond>");
+                player.sendMessage(ChatColor.GRAY + "Ready for: " + ChatColor.YELLOW + "/" + baseLabel + " placemaps <mapsPerSecond>");
             });
         });
 
@@ -204,9 +246,9 @@ public class DebugCommand implements CommandExecutor, TabCompleter {
             });
     }
 
-    private boolean handlePlaceMaps(Player player, String[] args) {
+    private boolean handlePlaceMaps(Player player, String baseLabel, String[] args) {
         if (args.length < 2) {
-            player.sendMessage(ChatColor.RED + "Usage: /debug placemaps <mapsPerSecond>");
+            player.sendMessage(ChatColor.RED + "Usage: /" + baseLabel + " placemaps <mapsPerSecond>");
             return true;
         }
 
@@ -427,16 +469,18 @@ public class DebugCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    @Override
-    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+    public List<String> tabComplete(String[] args) {
         if (args.length == 1) {
-            return filterStartsWith(args[0], Arrays.asList("seed", "placemaps", "stop"));
+            return filterStartsWith(args[0], Arrays.asList("seed", "placemaps", "stop", "inspect"));
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("seed")) {
             return Collections.singletonList("<num>");
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("placemaps")) {
             return Collections.singletonList("<mapsPerSecond>");
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("inspect")) {
+            return filterStartsWith(args[1], Arrays.asList("on", "off", "toggle"));
         }
         return Collections.emptyList();
     }
