@@ -15,6 +15,7 @@ import com.example.finemaps.core.render.MapViewManager;
 import org.bukkit.Bukkit;
 import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.MapMeta;
@@ -344,9 +345,9 @@ public class MapManager implements FineMapsAPI {
                     if (meta != null) {
                         meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map: " + artName);
                         List<String> lore = new ArrayList<>();
-                        lore.add(org.bukkit.ChatColor.GRAY + "Art: " + artName);
-                        lore.add(org.bukkit.ChatColor.GRAY + "Single block map");
+                        lore.add(org.bukkit.ChatColor.GRAY + "Size: 1x1");
                         meta.setLore(lore);
+                        hideVanillaMapTooltip(meta);
                         item.setItemMeta(meta);
                     }
                 }
@@ -483,30 +484,62 @@ public class MapManager implements FineMapsAPI {
             pdc.set(new NamespacedKey(plugin, "finemaps_width"), PersistentDataType.INTEGER, multiMap.getWidth());
             pdc.set(new NamespacedKey(plugin, "finemaps_height"), PersistentDataType.INTEGER, multiMap.getHeight());
             
-            // Set display name showing art name and dimensions
+            // Set display name showing only the art name (size stays in lore)
             if (displayName != null) {
-                meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map: " + displayName + 
-                                   org.bukkit.ChatColor.GRAY + " (" + multiMap.getWidth() + "x" + multiMap.getHeight() + ")");
+                meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map: " + displayName);
             } else {
-                meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map (" + multiMap.getWidth() + "x" + multiMap.getHeight() + ")");
+                meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map");
             }
             
             // Add lore with info
             List<String> lore = new ArrayList<>();
-            if (displayName != null) {
-                lore.add(org.bukkit.ChatColor.GRAY + "Art: " + displayName);
-            }
-            lore.add(org.bukkit.ChatColor.GRAY + "Multi-block map");
             lore.add(org.bukkit.ChatColor.GRAY + "Size: " + multiMap.getWidth() + "x" + multiMap.getHeight() + " blocks");
             lore.add("");
             lore.add(org.bukkit.ChatColor.YELLOW + "Look at a wall to see preview");
             lore.add(org.bukkit.ChatColor.YELLOW + "Right-click to place");
             meta.setLore(lore);
+            hideVanillaMapTooltip(meta);
             
             item.setItemMeta(meta);
         }
         
         return item;
+    }
+
+    /**
+     * Hides the vanilla map tooltip ("default lore") where supported.
+     * Uses reflection / dynamic enum lookup to keep compatibility across server versions.
+     */
+    void hideVanillaMapTooltip(ItemMeta meta) {
+        if (meta == null) {
+            return;
+        }
+
+        // Always available: hide generic attribute lines
+        try {
+            meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
+        } catch (Throwable ignored) {
+            // Best-effort on older forks/APIs
+        }
+
+        // 1.20.5+ (and some forks): hides extra item tooltip lines (used by maps among others)
+        try {
+            meta.addItemFlags(ItemFlag.valueOf("HIDE_ADDITIONAL_TOOLTIP"));
+        } catch (IllegalArgumentException ignored) {
+            // Not available on this API version
+        } catch (Throwable ignored) {
+            // Best-effort: don't fail item creation
+        }
+
+        // Paper/modern APIs: completely hide tooltip
+        try {
+            java.lang.reflect.Method setHideTooltip = meta.getClass().getMethod("setHideTooltip", boolean.class);
+            setHideTooltip.invoke(meta, true);
+        } catch (ReflectiveOperationException ignored) {
+            // Not available
+        } catch (Throwable ignored) {
+            // Best-effort
+        }
     }
     
     /**
