@@ -617,4 +617,79 @@ public abstract class AbstractDatabaseProvider implements DatabaseProvider {
         return new StoredMap(id, pluginId, creatorUUID, groupId, gridX, gridY, 
                             createdAt, lastAccessed, metadata);
     }
+
+    @Override
+    public CompletableFuture<Optional<Long>> getGroupByName(String pluginId, String name) {
+        return CompletableFuture.supplyAsync(() -> {
+            String sql = "SELECT id FROM finemaps_groups WHERE plugin_id = ? AND metadata = ?";
+            try (Connection conn = dataSource.getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(sql)) {
+                stmt.setString(1, pluginId);
+                stmt.setString(2, name);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    if (rs.next()) {
+                        return Optional.of(rs.getLong(1));
+                    }
+                }
+            } catch (SQLException e) {
+                logger.log(Level.SEVERE, "Failed to get group by name: " + name, e);
+            }
+            return Optional.empty();
+        }, executor);
+    }
+
+    @Override
+    public CompletableFuture<Optional<Long>> getMapByName(String pluginId, String name) {
+        return CompletableFuture.supplyAsync(() -> {
+            // First check single maps (not part of a group)
+            String sql = "SELECT id FROM finemaps_maps WHERE plugin_id = ? AND metadata = ? AND group_id = 0";
+            try (Connection conn = dataSource.getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(sql)) {
+                stmt.setString(1, pluginId);
+                stmt.setString(2, name);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    if (rs.next()) {
+                        return Optional.of(rs.getLong(1));
+                    }
+                }
+            } catch (SQLException e) {
+                logger.log(Level.SEVERE, "Failed to get map by name: " + name, e);
+            }
+            return Optional.empty();
+        }, executor);
+    }
+
+    @Override
+    public CompletableFuture<Boolean> isNameTaken(String pluginId, String name) {
+        return CompletableFuture.supplyAsync(() -> {
+            // Check both groups and single maps
+            String groupSql = "SELECT COUNT(*) FROM finemaps_groups WHERE plugin_id = ? AND metadata = ?";
+            String mapSql = "SELECT COUNT(*) FROM finemaps_maps WHERE plugin_id = ? AND metadata = ? AND group_id = 0";
+            
+            try (Connection conn = dataSource.getConnection()) {
+                try (PreparedStatement stmt = conn.prepareStatement(groupSql)) {
+                    stmt.setString(1, pluginId);
+                    stmt.setString(2, name);
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        if (rs.next() && rs.getInt(1) > 0) {
+                            return true;
+                        }
+                    }
+                }
+                
+                try (PreparedStatement stmt = conn.prepareStatement(mapSql)) {
+                    stmt.setString(1, pluginId);
+                    stmt.setString(2, name);
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        if (rs.next() && rs.getInt(1) > 0) {
+                            return true;
+                        }
+                    }
+                }
+            } catch (SQLException e) {
+                logger.log(Level.SEVERE, "Failed to check name: " + name, e);
+            }
+            return false;
+        }, executor);
+    }
 }

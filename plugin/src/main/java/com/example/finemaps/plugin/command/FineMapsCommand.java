@@ -73,16 +73,16 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
     private void sendHelp(CommandSender sender) {
         sender.sendMessage(ChatColor.GOLD + "=== FineMaps Commands ===");
-        sender.sendMessage(ChatColor.YELLOW + "/finemaps url <url> [width] [height] [dither]" + 
-                          ChatColor.GRAY + " - Create map from URL");
-        sender.sendMessage(ChatColor.YELLOW + "/finemaps get <mapId>" + 
-                          ChatColor.GRAY + " - Get a map item");
-        sender.sendMessage(ChatColor.YELLOW + "/finemaps delete <mapId>" + 
-                          ChatColor.GRAY + " - Delete a map");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps url <name> <url> [width] [height] [dither]" + 
+                          ChatColor.GRAY + " - Create map from URL with a name");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps get <name>" + 
+                          ChatColor.GRAY + " - Get a map item by name");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps delete <name>" + 
+                          ChatColor.GRAY + " - Delete a map by name");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps list [pluginId]" + 
                           ChatColor.GRAY + " - List maps");
-        sender.sendMessage(ChatColor.YELLOW + "/finemaps info <mapId>" + 
-                          ChatColor.GRAY + " - Show map info");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps info <name>" + 
+                          ChatColor.GRAY + " - Show map info by name");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps stats" + 
                           ChatColor.GRAY + " - Show statistics");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps reload" + 
@@ -141,8 +141,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        if (args.length < 2) {
-            player.sendMessage(ChatColor.RED + "Usage: /finemaps url <url> [width] [height] [dither]");
+        if (args.length < 3) {
+            player.sendMessage(ChatColor.RED + "Usage: /finemaps url <name> <url> [width] [height] [dither]");
             return true;
         }
 
@@ -153,32 +153,44 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        String urlStr = args[1];
+        String artName = args[1];
+        String urlStr = args[2];
         int width = 1;
         int height = 1;
         boolean dither = config.getImages().isDefaultDither();
 
-        // Parse optional arguments
-        if (args.length >= 3) {
-            try {
-                width = Integer.parseInt(args[2]);
-            } catch (NumberFormatException e) {
-                player.sendMessage(ChatColor.RED + "Invalid width: " + args[2]);
-                return true;
-            }
+        // Validate art name (alphanumeric, underscores, hyphens only)
+        if (!artName.matches("^[a-zA-Z0-9_-]+$")) {
+            player.sendMessage(ChatColor.RED + "Art name can only contain letters, numbers, underscores, and hyphens.");
+            return true;
         }
 
+        if (artName.length() > 32) {
+            player.sendMessage(ChatColor.RED + "Art name must be 32 characters or less.");
+            return true;
+        }
+
+        // Parse optional arguments
         if (args.length >= 4) {
             try {
-                height = Integer.parseInt(args[3]);
+                width = Integer.parseInt(args[3]);
             } catch (NumberFormatException e) {
-                player.sendMessage(ChatColor.RED + "Invalid height: " + args[3]);
+                player.sendMessage(ChatColor.RED + "Invalid width: " + args[3]);
                 return true;
             }
         }
 
         if (args.length >= 5) {
-            dither = Boolean.parseBoolean(args[4]);
+            try {
+                height = Integer.parseInt(args[4]);
+            } catch (NumberFormatException e) {
+                player.sendMessage(ChatColor.RED + "Invalid height: " + args[4]);
+                return true;
+            }
+        }
+
+        if (args.length >= 6) {
+            dither = Boolean.parseBoolean(args[5]);
         }
 
         // Validate dimensions
@@ -206,57 +218,68 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             }
         }
 
-        player.sendMessage(ChatColor.YELLOW + "Downloading and processing image...");
-
+        final String finalArtName = artName;
         final int finalWidth = width;
         final int finalHeight = height;
         final boolean finalDither = dither;
 
-        // Process image asynchronously
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
-            try {
-                BufferedImage image = ImageIO.read(new URL(urlStr));
-                if (image == null) {
-                    plugin.getServer().getScheduler().runTask(plugin, () -> {
-                        player.sendMessage(ChatColor.RED + "Failed to download image.");
-                    });
-                    return;
-                }
+        // Check if name is already taken
+        mapManager.isNameTaken("finemaps", artName).thenAccept(taken -> {
+            if (taken) {
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    player.sendMessage(ChatColor.RED + "An art with the name '" + finalArtName + "' already exists.");
+                });
+                return;
+            }
 
-                // Check image size
-                int maxSize = config.getPermissions().getMaxImportSize();
-                if (image.getWidth() > maxSize || image.getHeight() > maxSize) {
-                    plugin.getServer().getScheduler().runTask(plugin, () -> {
-                        player.sendMessage(ChatColor.RED + "Image too large. Max size: " + maxSize + "x" + maxSize);
-                    });
-                    return;
-                }
+            player.sendMessage(ChatColor.YELLOW + "Downloading and processing image...");
 
-                // Create map(s)
-                if (finalWidth == 1 && finalHeight == 1) {
-                    // Single map
-                    mapManager.createMapFromImage("finemaps", image, finalDither).thenAccept(map -> {
+            // Process image asynchronously
+            plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+                try {
+                    BufferedImage image = ImageIO.read(new URL(urlStr));
+                    if (image == null) {
                         plugin.getServer().getScheduler().runTask(plugin, () -> {
-                            mapManager.giveMapToPlayer(player, map.getId());
-                            player.sendMessage(ChatColor.GREEN + "Created map from image! ID: " + map.getId());
+                            player.sendMessage(ChatColor.RED + "Failed to download image.");
                         });
-                    });
-                } else {
-                    // Multi-block map
-                    mapManager.createMultiBlockMap("finemaps", image, finalWidth, finalHeight, finalDither)
-                        .thenAccept(multiMap -> {
+                        return;
+                    }
+
+                    // Check image size
+                    int maxSize = config.getPermissions().getMaxImportSize();
+                    if (image.getWidth() > maxSize || image.getHeight() > maxSize) {
+                        plugin.getServer().getScheduler().runTask(plugin, () -> {
+                            player.sendMessage(ChatColor.RED + "Image too large. Max size: " + maxSize + "x" + maxSize);
+                        });
+                        return;
+                    }
+
+                    // Create map(s)
+                    if (finalWidth == 1 && finalHeight == 1) {
+                        // Single map - create with metadata (art name)
+                        mapManager.createMapFromImageWithName("finemaps", image, finalDither, finalArtName).thenAccept(map -> {
                             plugin.getServer().getScheduler().runTask(plugin, () -> {
-                                mapManager.giveMultiBlockMapToPlayer(player, multiMap.getGroupId());
-                                player.sendMessage(ChatColor.GREEN + "Created " + finalWidth + "x" + finalHeight + 
-                                                  " map! Group ID: " + multiMap.getGroupId());
+                                mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
+                                player.sendMessage(ChatColor.GREEN + "Created map '" + finalArtName + "' from image!");
                             });
                         });
+                    } else {
+                        // Multi-block map with name stored in group metadata
+                        mapManager.createMultiBlockMapWithName("finemaps", image, finalWidth, finalHeight, finalDither, finalArtName)
+                            .thenAccept(multiMap -> {
+                                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                                    mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
+                                    player.sendMessage(ChatColor.GREEN + "Created " + finalWidth + "x" + finalHeight + 
+                                                      " map '" + finalArtName + "'!");
+                                });
+                            });
+                    }
+                } catch (Exception e) {
+                    plugin.getServer().getScheduler().runTask(plugin, () -> {
+                        player.sendMessage(ChatColor.RED + "Error processing image: " + e.getMessage());
+                    });
                 }
-            } catch (Exception e) {
-                plugin.getServer().getScheduler().runTask(plugin, () -> {
-                    player.sendMessage(ChatColor.RED + "Error processing image: " + e.getMessage());
-                });
-            }
+            });
         });
 
         return true;
@@ -276,27 +299,36 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length < 2) {
-            player.sendMessage(ChatColor.RED + "Usage: /finemaps get <mapId>");
+            player.sendMessage(ChatColor.RED + "Usage: /finemaps get <name>");
             return true;
         }
 
-        long mapId;
-        try {
-            mapId = Long.parseLong(args[1]);
-        } catch (NumberFormatException e) {
-            player.sendMessage(ChatColor.RED + "Invalid map ID.");
-            return true;
-        }
+        String artName = args[1];
 
-        mapManager.getMap(mapId).thenAccept(optMap -> {
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
-                if (optMap.isPresent()) {
-                    mapManager.giveMapToPlayer(player, mapId);
-                    player.sendMessage(ChatColor.GREEN + "Given map " + mapId);
-                } else {
-                    player.sendMessage(ChatColor.RED + "Map not found: " + mapId);
-                }
-            });
+        // First try to find a multi-block map group with this name
+        mapManager.getGroupByName("finemaps", artName).thenAccept(optGroupId -> {
+            if (optGroupId.isPresent()) {
+                long groupId = optGroupId.get();
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    mapManager.giveMultiBlockMapToPlayerWithName(player, groupId, artName);
+                    player.sendMessage(ChatColor.GREEN + "Given map '" + artName + "'");
+                });
+            } else {
+                // Try to find a single map with this name
+                mapManager.getMapByName("finemaps", artName).thenAccept(optMapId -> {
+                    if (optMapId.isPresent()) {
+                        long mapId = optMapId.get();
+                        plugin.getServer().getScheduler().runTask(plugin, () -> {
+                            mapManager.giveMapToPlayerWithName(player, mapId, artName);
+                            player.sendMessage(ChatColor.GREEN + "Given map '" + artName + "'");
+                        });
+                    } else {
+                        plugin.getServer().getScheduler().runTask(plugin, () -> {
+                            player.sendMessage(ChatColor.RED + "Map not found: " + artName);
+                        });
+                    }
+                });
+            }
         });
 
         return true;
@@ -309,26 +341,46 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length < 2) {
-            sender.sendMessage(ChatColor.RED + "Usage: /finemaps delete <mapId>");
+            sender.sendMessage(ChatColor.RED + "Usage: /finemaps delete <name>");
             return true;
         }
 
-        long mapId;
-        try {
-            mapId = Long.parseLong(args[1]);
-        } catch (NumberFormatException e) {
-            sender.sendMessage(ChatColor.RED + "Invalid map ID.");
-            return true;
-        }
+        String artName = args[1];
 
-        mapManager.deleteMap(mapId).thenAccept(success -> {
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
-                if (success) {
-                    sender.sendMessage(ChatColor.GREEN + "Deleted map " + mapId);
-                } else {
-                    sender.sendMessage(ChatColor.RED + "Failed to delete map " + mapId);
-                }
-            });
+        // First try to find a multi-block map group with this name
+        mapManager.getGroupByName("finemaps", artName).thenAccept(optGroupId -> {
+            if (optGroupId.isPresent()) {
+                long groupId = optGroupId.get();
+                mapManager.deleteMultiBlockMap(groupId).thenAccept(success -> {
+                    plugin.getServer().getScheduler().runTask(plugin, () -> {
+                        if (success) {
+                            sender.sendMessage(ChatColor.GREEN + "Deleted map '" + artName + "'");
+                        } else {
+                            sender.sendMessage(ChatColor.RED + "Failed to delete map '" + artName + "'");
+                        }
+                    });
+                });
+            } else {
+                // Try to find a single map with this name
+                mapManager.getMapByName("finemaps", artName).thenAccept(optMapId -> {
+                    if (optMapId.isPresent()) {
+                        long mapId = optMapId.get();
+                        mapManager.deleteMap(mapId).thenAccept(success -> {
+                            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                                if (success) {
+                                    sender.sendMessage(ChatColor.GREEN + "Deleted map '" + artName + "'");
+                                } else {
+                                    sender.sendMessage(ChatColor.RED + "Failed to delete map '" + artName + "'");
+                                }
+                            });
+                        });
+                    } else {
+                        plugin.getServer().getScheduler().runTask(plugin, () -> {
+                            sender.sendMessage(ChatColor.RED + "Map not found: " + artName);
+                        });
+                    }
+                });
+            }
         });
 
         return true;
@@ -374,44 +426,70 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length < 2) {
-            sender.sendMessage(ChatColor.RED + "Usage: /finemaps info <mapId>");
+            sender.sendMessage(ChatColor.RED + "Usage: /finemaps info <name>");
             return true;
         }
 
-        long mapId;
-        try {
-            mapId = Long.parseLong(args[1]);
-        } catch (NumberFormatException e) {
-            sender.sendMessage(ChatColor.RED + "Invalid map ID.");
-            return true;
-        }
+        String artName = args[1];
 
-        mapManager.getMap(mapId).thenAccept(optMap -> {
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
-                if (!optMap.isPresent()) {
-                    sender.sendMessage(ChatColor.RED + "Map not found: " + mapId);
-                    return;
-                }
+        // First try to find a multi-block map group with this name
+        mapManager.getGroupByName("finemaps", artName).thenAccept(optGroupId -> {
+            if (optGroupId.isPresent()) {
+                long groupId = optGroupId.get();
+                mapManager.getMultiBlockMap(groupId).thenAccept(optMultiMap -> {
+                    plugin.getServer().getScheduler().runTask(plugin, () -> {
+                        if (!optMultiMap.isPresent()) {
+                            sender.sendMessage(ChatColor.RED + "Map not found: " + artName);
+                            return;
+                        }
 
-                StoredMap map = optMap.get();
-                sender.sendMessage(ChatColor.GOLD + "=== Map Info ===");
-                sender.sendMessage(ChatColor.YELLOW + "ID: " + ChatColor.WHITE + map.getId());
-                sender.sendMessage(ChatColor.YELLOW + "Plugin: " + ChatColor.WHITE + map.getPluginId());
-                sender.sendMessage(ChatColor.YELLOW + "Creator: " + ChatColor.WHITE + 
-                                  (map.getCreatorUUID() != null ? map.getCreatorUUID() : "System"));
-                sender.sendMessage(ChatColor.YELLOW + "Created: " + ChatColor.WHITE + 
-                                  new Date(map.getCreatedAt()));
-                sender.sendMessage(ChatColor.YELLOW + "Last Accessed: " + ChatColor.WHITE + 
-                                  new Date(map.getLastAccessed()));
-                if (map.isMultiBlock()) {
-                    sender.sendMessage(ChatColor.YELLOW + "Group ID: " + ChatColor.WHITE + map.getGroupId());
-                    sender.sendMessage(ChatColor.YELLOW + "Grid Position: " + ChatColor.WHITE + 
-                                      map.getGridX() + ", " + map.getGridY());
-                }
-                if (map.getMetadata() != null) {
-                    sender.sendMessage(ChatColor.YELLOW + "Metadata: " + ChatColor.WHITE + map.getMetadata());
-                }
-            });
+                        MultiBlockMap multiMap = optMultiMap.get();
+                        sender.sendMessage(ChatColor.GOLD + "=== Map Info: " + artName + " ===");
+                        sender.sendMessage(ChatColor.YELLOW + "Name: " + ChatColor.WHITE + artName);
+                        sender.sendMessage(ChatColor.YELLOW + "Type: " + ChatColor.WHITE + "Multi-block");
+                        sender.sendMessage(ChatColor.YELLOW + "Size: " + ChatColor.WHITE + 
+                                          multiMap.getWidth() + "x" + multiMap.getHeight() + " blocks");
+                        sender.sendMessage(ChatColor.YELLOW + "Group ID: " + ChatColor.WHITE + groupId);
+                        sender.sendMessage(ChatColor.YELLOW + "Plugin: " + ChatColor.WHITE + multiMap.getPluginId());
+                        sender.sendMessage(ChatColor.YELLOW + "Creator: " + ChatColor.WHITE + 
+                                          (multiMap.getCreatorUUID() != null ? multiMap.getCreatorUUID() : "System"));
+                        sender.sendMessage(ChatColor.YELLOW + "Created: " + ChatColor.WHITE + 
+                                          new Date(multiMap.getCreatedAt()));
+                    });
+                });
+            } else {
+                // Try to find a single map with this name
+                mapManager.getMapByName("finemaps", artName).thenAccept(optMapId -> {
+                    if (optMapId.isPresent()) {
+                        long mapId = optMapId.get();
+                        mapManager.getMap(mapId).thenAccept(optMap -> {
+                            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                                if (!optMap.isPresent()) {
+                                    sender.sendMessage(ChatColor.RED + "Map not found: " + artName);
+                                    return;
+                                }
+
+                                StoredMap map = optMap.get();
+                                sender.sendMessage(ChatColor.GOLD + "=== Map Info: " + artName + " ===");
+                                sender.sendMessage(ChatColor.YELLOW + "Name: " + ChatColor.WHITE + artName);
+                                sender.sendMessage(ChatColor.YELLOW + "Type: " + ChatColor.WHITE + "Single block");
+                                sender.sendMessage(ChatColor.YELLOW + "ID: " + ChatColor.WHITE + map.getId());
+                                sender.sendMessage(ChatColor.YELLOW + "Plugin: " + ChatColor.WHITE + map.getPluginId());
+                                sender.sendMessage(ChatColor.YELLOW + "Creator: " + ChatColor.WHITE + 
+                                                  (map.getCreatorUUID() != null ? map.getCreatorUUID() : "System"));
+                                sender.sendMessage(ChatColor.YELLOW + "Created: " + ChatColor.WHITE + 
+                                                  new Date(map.getCreatedAt()));
+                                sender.sendMessage(ChatColor.YELLOW + "Last Accessed: " + ChatColor.WHITE + 
+                                                  new Date(map.getLastAccessed()));
+                            });
+                        });
+                    } else {
+                        plugin.getServer().getScheduler().runTask(plugin, () -> {
+                            sender.sendMessage(ChatColor.RED + "Map not found: " + artName);
+                        });
+                    }
+                });
+            }
         });
 
         return true;
@@ -459,11 +537,11 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         if (args.length == 2) {
             String sub = args[0].toLowerCase();
             if (sub.equals("url") || sub.equals("fromurl")) {
-                return Collections.singletonList("<url>");
+                return Collections.singletonList("<name>");
             }
             if (sub.equals("get") || sub.equals("give") || sub.equals("delete") || 
                 sub.equals("remove") || sub.equals("info")) {
-                return Collections.singletonList("<mapId>");
+                return Collections.singletonList("<name>");
             }
             if (sub.equals("list")) {
                 return Collections.singletonList("<pluginId>");
@@ -471,9 +549,10 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length >= 3 && (args[0].equalsIgnoreCase("url") || args[0].equalsIgnoreCase("fromurl"))) {
-            if (args.length == 3) return Collections.singletonList("<width>");
-            if (args.length == 4) return Collections.singletonList("<height>");
-            if (args.length == 5) return Arrays.asList("true", "false");
+            if (args.length == 3) return Collections.singletonList("<url>");
+            if (args.length == 4) return Collections.singletonList("<width>");
+            if (args.length == 5) return Collections.singletonList("<height>");
+            if (args.length == 6) return Arrays.asList("true", "false");
         }
 
         return Collections.emptyList();

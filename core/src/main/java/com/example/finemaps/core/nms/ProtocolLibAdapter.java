@@ -261,6 +261,20 @@ public class ProtocolLibAdapter implements NMSAdapter {
     }
 
     @Override
+    public int spawnPreviewBlockDisplay(Location location, boolean valid) {
+        // ProtocolLib adapter delegates to the spawnMapDisplay approach
+        // This would require packet-based entity spawning which is complex
+        // For now, return -1 to fall back to particles
+        return -1;
+    }
+
+    @Override
+    public void removePreviewDisplay(int entityId) {
+        // Same as removeDisplay since they use the same entity destroy packet
+        removeDisplay(entityId);
+    }
+
+    @Override
     public void showParticleOutline(Player player, Location location) {
         // Show particle outline for map preview in older versions
         World world = location.getWorld();

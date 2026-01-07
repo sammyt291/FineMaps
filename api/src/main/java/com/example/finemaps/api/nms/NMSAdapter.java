@@ -97,6 +97,23 @@ public interface NMSAdapter {
     boolean supportsBlockDisplays();
 
     /**
+     * Spawns a colored block display entity for preview outlines.
+     * Uses green/lime concrete for valid placement, red concrete for invalid.
+     *
+     * @param location The location to spawn at
+     * @param valid Whether this is a valid (green) or invalid (red) placement indicator
+     * @return The entity ID, or -1 if not supported
+     */
+    int spawnPreviewBlockDisplay(Location location, boolean valid);
+
+    /**
+     * Removes a preview block display entity.
+     *
+     * @param entityId The entity ID
+     */
+    void removePreviewDisplay(int entityId);
+
+    /**
      * Shows particle outline for map preview (legacy method).
      *
      * @param player The player to show particles to

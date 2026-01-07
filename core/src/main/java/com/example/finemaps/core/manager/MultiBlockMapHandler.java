@@ -39,11 +39,17 @@ public class MultiBlockMapHandler {
     // Track preview tasks per player
     private final Map<UUID, BukkitTask> playerPreviewTasks = new ConcurrentHashMap<>();
     
-    // Track preview display entities per player
+    // Track preview display entities per player (for block display previews)
     private final Map<UUID, List<Integer>> playerPreviewDisplays = new ConcurrentHashMap<>();
     
     // Track which players have preview task running
     private final Set<UUID> playersWithPreview = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    
+    // Track last preview state per player for efficient updates
+    private final Map<UUID, PreviewState> playerPreviewStates = new ConcurrentHashMap<>();
+    
+    // Whether to use block displays for preview (modern versions)
+    private boolean useBlockDisplays = false;
     
     private final NamespacedKey groupIdKey;
     private final NamespacedKey gridPositionKey;
@@ -60,11 +66,41 @@ public class MultiBlockMapHandler {
         this.groupIdKey = new NamespacedKey(plugin, "finemaps_group");
         this.gridPositionKey = new NamespacedKey(plugin, "finemaps_grid");
         
+        // Check if block displays are supported (prefer them over particles)
+        this.useBlockDisplays = mapManager.getNmsAdapter().supportsBlockDisplays();
+        
         // Find the dust particle (DUST in newer versions, REDSTONE in older)
         this.dustParticle = findDustParticle();
         
         // Setup dust options for particles
         setupDustOptions();
+    }
+
+    /**
+     * Holds state for a preview to detect when it needs to be updated.
+     */
+    private static class PreviewState {
+        final Location location;
+        final BlockFace facing;
+        final boolean valid;
+        final int width;
+        final int height;
+
+        PreviewState(Location location, BlockFace facing, boolean valid, int width, int height) {
+            this.location = location;
+            this.facing = facing;
+            this.valid = valid;
+            this.width = width;
+            this.height = height;
+        }
+
+        boolean matches(Location loc, BlockFace face, boolean isValid, int w, int h) {
+            return location != null && loc != null &&
+                   location.getBlockX() == loc.getBlockX() &&
+                   location.getBlockY() == loc.getBlockY() &&
+                   location.getBlockZ() == loc.getBlockZ() &&
+                   facing == face && valid == isValid && width == w && height == h;
+        }
     }
     
     /**
@@ -177,10 +213,14 @@ public class MultiBlockMapHandler {
      * @param player The player
      */
     private void clearPreview(Player player) {
+        // Clear preview state
+        playerPreviewStates.remove(player.getUniqueId());
+        
+        // Clear block displays
         List<Integer> displays = playerPreviewDisplays.remove(player.getUniqueId());
         if (displays != null) {
             for (int displayId : displays) {
-                mapManager.getNmsAdapter().removeDisplay(displayId);
+                mapManager.getNmsAdapter().removePreviewDisplay(displayId);
             }
         }
     }
@@ -213,8 +253,9 @@ public class MultiBlockMapHandler {
         int width = mapManager.getMultiBlockWidth(item);
         int height = mapManager.getMultiBlockHeight(item);
         
-        // Calculate placement area
-        Location startLoc = hitBlock.getRelative(hitFace).getLocation();
+        // Calculate placement area - now using adjusted anchor position
+        Location anchorLoc = hitBlock.getRelative(hitFace).getLocation();
+        Location startLoc = calculateStartLocation(anchorLoc, hitFace, width, height);
         BlockFace rightDir = getRight(hitFace);
         
         // Check if all positions are valid
@@ -226,7 +267,7 @@ public class MultiBlockMapHandler {
                 Location loc = startLoc.clone()
                     .add(rightDir.getModX() * x, -y, rightDir.getModZ() * x);
                     
-                previewLocations.add(loc);
+                previewLocations.add(loc.clone());
                 
                 Block previewBlock = loc.getBlock();
                 Block behindBlock = previewBlock.getRelative(hitFace.getOppositeFace());
@@ -237,7 +278,8 @@ public class MultiBlockMapHandler {
                 }
                 
                 // Check for existing item frames
-                for (Entity entity : loc.getWorld().getNearbyEntities(loc.add(0.5, 0.5, 0.5), 0.5, 0.5, 0.5)) {
+                Location checkLoc = loc.clone().add(0.5, 0.5, 0.5);
+                for (Entity entity : loc.getWorld().getNearbyEntities(checkLoc, 0.5, 0.5, 0.5)) {
                     if (entity instanceof ItemFrame) {
                         canPlace = false;
                         break;
@@ -246,8 +288,68 @@ public class MultiBlockMapHandler {
             }
         }
         
-        // Show particle outline
-        showOutlineParticles(player, previewLocations, hitFace, canPlace);
+        // Check if we need to update the preview (optimization)
+        PreviewState currentState = playerPreviewStates.get(player.getUniqueId());
+        if (currentState != null && currentState.matches(startLoc, hitFace, canPlace, width, height)) {
+            // No change, skip update (but still spawn particles if not using block displays)
+            if (!useBlockDisplays) {
+                showOutlineParticles(player, previewLocations, hitFace, canPlace);
+            }
+            return;
+        }
+        
+        // Update state
+        playerPreviewStates.put(player.getUniqueId(), new PreviewState(startLoc, hitFace, canPlace, width, height));
+        
+        // Show preview using block displays (modern) or particles (legacy)
+        if (useBlockDisplays) {
+            showBlockDisplayPreview(player, previewLocations, hitFace, canPlace);
+        } else {
+            showOutlineParticles(player, previewLocations, hitFace, canPlace);
+        }
+    }
+
+    /**
+     * Shows a preview using block display entities (modern versions).
+     *
+     * @param player The player
+     * @param locations The locations to show preview at
+     * @param facing The facing direction
+     * @param valid Whether placement is valid
+     */
+    private void showBlockDisplayPreview(Player player, List<Location> locations, BlockFace facing, boolean valid) {
+        // Clear existing block displays first
+        clearPreview(player);
+        
+        List<Integer> displayIds = new ArrayList<>();
+        
+        for (Location loc : locations) {
+            // Offset the display slightly toward the player for visibility
+            Location displayLoc = loc.clone();
+            double offset = 0.01;
+            
+            switch (facing) {
+                case NORTH:
+                    displayLoc.add(0, 0, offset);
+                    break;
+                case SOUTH:
+                    displayLoc.add(0, 0, 1 - offset);
+                    break;
+                case EAST:
+                    displayLoc.add(1 - offset, 0, 0);
+                    break;
+                case WEST:
+                    displayLoc.add(offset, 0, 0);
+                    break;
+            }
+            
+            int displayId = mapManager.getNmsAdapter().spawnPreviewBlockDisplay(displayLoc, valid);
+            if (displayId != -1) {
+                displayIds.add(displayId);
+            }
+        }
+        
+        playerPreviewDisplays.put(player.getUniqueId(), displayIds);
     }
     
     /**
@@ -411,7 +513,13 @@ public class MultiBlockMapHandler {
             return false;
         }
         
-        Location startLoc = hitBlock.getRelative(hitFace).getLocation();
+        // Get dimensions to calculate proper start location
+        int width = mapManager.getMultiBlockWidth(item);
+        int height = mapManager.getMultiBlockHeight(item);
+        
+        // Calculate the start location based on the clicked position
+        Location clickedLoc = hitBlock.getRelative(hitFace).getLocation();
+        Location startLoc = calculateStartLocation(clickedLoc, hitFace, width, height);
         
         // Try to place the map
         boolean success = placeMultiBlockMap(groupId, startLoc, hitFace, player);
@@ -769,16 +877,65 @@ public class MultiBlockMapHandler {
     }
 
     /**
-     * Gets the right direction relative to a facing direction.
+     * Gets the right direction from the VIEWER's perspective when looking at a map.
+     * 
+     * When a map faces NORTH (the map is on a wall, pointing north toward the viewer),
+     * the viewer is standing to the south looking north.
+     * The viewer's RIGHT is WEST (not EAST).
+     * 
+     * This ensures that column 0 (left side of the image) appears on the left
+     * side of the placed map from the viewer's perspective.
      */
     private BlockFace getRight(BlockFace facing) {
         switch (facing) {
-            case NORTH: return BlockFace.EAST;
-            case SOUTH: return BlockFace.WEST;
-            case EAST: return BlockFace.SOUTH;
-            case WEST: return BlockFace.NORTH;
-            default: return BlockFace.EAST;
+            case NORTH: return BlockFace.WEST;  // Viewer looking north, their right is west
+            case SOUTH: return BlockFace.EAST;  // Viewer looking south, their right is east
+            case EAST: return BlockFace.NORTH;  // Viewer looking east, their right is north
+            case WEST: return BlockFace.SOUTH;  // Viewer looking west, their right is south
+            default: return BlockFace.WEST;
         }
+    }
+
+    /**
+     * Calculates the top-left start location for placement based on where the player clicked.
+     * 
+     * The player clicks where they want the anchor to be:
+     * - For odd width: bottom-middle block (center of bottom row)
+     * - For even width: bottom-right of center (right-of-center in bottom row)
+     * 
+     * This method calculates where the top-left corner should be.
+     *
+     * @param clickedLoc The location the player clicked (where they want the anchor)
+     * @param facing The direction the map will face
+     * @param width The width of the multi-block map
+     * @param height The height of the multi-block map
+     * @return The top-left start location for placement
+     */
+    private Location calculateStartLocation(Location clickedLoc, BlockFace facing, int width, int height) {
+        // Determine anchor position in grid coordinates
+        // For odd width: center column (width/2 with integer division)
+        // For even width: right-of-center column (width/2)
+        // Both cases: bottom row (height-1)
+        int anchorX = width / 2;  // Works for both odd and even
+        int anchorY = height - 1; // Bottom row
+        
+        // Get the right direction (from viewer's perspective)
+        BlockFace rightDir = getRight(facing);
+        
+        // Calculate the offset from the start location to the anchor
+        // The placement code does: loc = startLoc + rightDir * x - (0, y, 0)
+        // So: anchor = startLoc + rightDir * anchorX - (0, anchorY, 0)
+        // Therefore: startLoc = anchor - rightDir * anchorX + (0, anchorY, 0)
+        
+        Location startLoc = clickedLoc.clone();
+        
+        // Move LEFT (opposite of right) by anchorX blocks
+        startLoc.add(-rightDir.getModX() * anchorX, 0, -rightDir.getModZ() * anchorX);
+        
+        // Move UP by anchorY blocks (since placement goes down with -y)
+        startLoc.add(0, anchorY, 0);
+        
+        return startLoc;
     }
 
     /**
