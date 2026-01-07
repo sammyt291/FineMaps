@@ -102,9 +102,12 @@ public interface NMSAdapter {
      *
      * @param location The location to spawn at
      * @param valid Whether this is a valid (green) or invalid (red) placement indicator
+     * @param scaleX Scale on the X axis in blocks
+     * @param scaleY Scale on the Y axis in blocks
+     * @param scaleZ Scale on the Z axis in blocks
      * @return The entity ID, or -1 if not supported
      */
-    int spawnPreviewBlockDisplay(Location location, boolean valid);
+    int spawnPreviewBlockDisplay(Location location, boolean valid, float scaleX, float scaleY, float scaleZ);
 
     /**
      * Removes a preview block display entity.

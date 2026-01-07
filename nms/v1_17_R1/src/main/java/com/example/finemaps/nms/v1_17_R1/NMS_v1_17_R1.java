@@ -52,7 +52,7 @@ public class NMS_v1_17_R1 implements NMSAdapter {
     @Override public int spawnMapDisplay(Location location, int mapId) { return -1; }
     @Override public void removeDisplay(int entityId) {}
     @Override public boolean supportsBlockDisplays() { return false; }
-    @Override public int spawnPreviewBlockDisplay(Location location, boolean valid) { return -1; }
+    @Override public int spawnPreviewBlockDisplay(Location location, boolean valid, float scaleX, float scaleY, float scaleZ) { return -1; }
     @Override public void removePreviewDisplay(int entityId) {}
 
     @Override
