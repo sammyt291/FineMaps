@@ -103,19 +103,16 @@ public class PlayerListener implements Listener {
         
         Player player = event.getPlayer();
         ItemStack item = player.getInventory().getItemInMainHand();
-        
-        // Check if holding a multi-block map
-        long groupId = mapManager.getGroupIdFromItem(item);
-        if (groupId <= 0) {
+
+        // Check if holding a stored map (single or multi-block)
+        if (item == null || !mapManager.isStoredMap(item)) {
             return;
         }
         
-        // This is a multi-block map - try to place it
+        // This is a stored map - try to place it using the placement system
         event.setCancelled(true);
-        
-        if (multiBlockHandler.tryPlaceMultiBlockMap(player, item)) {
-            // Successfully placed
-        }
+
+        multiBlockHandler.tryPlaceStoredMap(player, item);
     }
     
     /**
@@ -127,10 +124,8 @@ public class PlayerListener implements Listener {
         if (!player.isOnline()) return;
         
         ItemStack held = player.getInventory().getItemInMainHand();
-        long groupId = mapManager.getGroupIdFromItem(held);
-        
-        if (groupId > 0) {
-            // Start preview for multi-block map
+        if (held != null && mapManager.isStoredMap(held)) {
+            // Start preview for stored map (single or multi-block)
             multiBlockHandler.startPreviewTask(player);
         }
     }

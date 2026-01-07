@@ -52,9 +52,6 @@ public class MapInteractListener implements Listener {
             if (mapId != -1) {
                 // Send map data to player
                 mapManager.sendMapToPlayer(player, mapId);
-                
-                // Start preview if enabled
-                startPreview(player, mapId);
             }
         }
     }
