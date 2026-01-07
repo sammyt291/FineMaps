@@ -1,0 +1,82 @@
+# MapDB Configuration
+# Database-backed map storage system
+
+# Database configuration
+database:
+  # Database type: 'sqlite' or 'mysql'
+  type: sqlite
+  
+  # SQLite settings
+  sqlite:
+    # Database file name (relative to plugin folder)
+    file: maps.db
+  
+  # MySQL settings (only used if type is 'mysql')
+  mysql:
+    host: localhost
+    port: 3306
+    database: mapdb
+    username: root
+    password: ""
+    use-ssl: false
+
+# Permission settings
+permissions:
+  # Default map creation limit for players (-1 for unlimited)
+  default-limit: 100
+  
+  # Map limits per permission group
+  # Players with mapdb.limit.<group> permission get that limit
+  group-limits:
+    vip: 500
+    premium: 1000
+    staff: -1
+  
+  # Whether to allow URL image imports
+  allow-url-import: true
+  
+  # Maximum image size for URL imports (in pixels, width or height)
+  max-import-size: 4096
+  
+  # Allowed URL domains for image import
+  # Leave empty to allow all domains
+  # Example: ["imgur.com", "i.imgur.com", "cdn.discordapp.com"]
+  allowed-domains: []
+
+# Map settings
+maps:
+  # Maximum number of virtual map IDs to use (0-32000)
+  # Higher values allow more unique maps but use more memory
+  max-virtual-ids: 30000
+  
+  # How often to clean up unused virtual IDs (in ticks)
+  # 6000 ticks = 5 minutes
+  cleanup-interval: 6000
+  
+  # Time before a map is considered stale for cache cleanup (in milliseconds)
+  # 86400000 = 24 hours
+  stale-time: 86400000
+  
+  # Whether to show particle outlines for map previews on older versions (pre-1.19.4)
+  use-particles-legacy: true
+  
+  # Whether to use block displays for map previews on 1.19.4+
+  use-block-displays: true
+
+# Image processing settings
+images:
+  # Whether to use dithering by default when creating maps from images
+  # Dithering improves color accuracy but may look grainy
+  default-dither: true
+  
+  # Maximum width for multi-block maps (in blocks)
+  max-width: 10
+  
+  # Maximum height for multi-block maps (in blocks)
+  max-height: 10
+  
+  # Connection timeout for URL imports (in milliseconds)
+  connection-timeout: 10000
+  
+  # Read timeout for URL imports (in milliseconds)
+  read-timeout: 30000
