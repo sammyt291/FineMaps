@@ -3,6 +3,9 @@ package com.example.finemaps.plugin.listener;
 import com.example.finemaps.core.manager.MapManager;
 import com.example.finemaps.core.manager.MultiBlockMapHandler;
 import com.example.finemaps.plugin.FineMapsPlugin;
+import org.bukkit.ChatColor;
+import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
@@ -19,6 +22,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.NamespacedKey;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.util.Vector;
 
 /**
  * Handles item frame events for multi-block map management.
@@ -29,12 +33,18 @@ public class ItemFrameListener implements Listener {
     private final MapManager mapManager;
     private final MultiBlockMapHandler multiBlockHandler;
     private final NamespacedKey placedKey;
+    private final NamespacedKey groupIdKey;
+    private final NamespacedKey gridPositionKey;
+    private final NamespacedKey singleMapIdKey;
 
     public ItemFrameListener(FineMapsPlugin plugin) {
         this.plugin = plugin;
         this.mapManager = plugin.getMapManager();
         this.multiBlockHandler = plugin.getMultiBlockHandler();
         this.placedKey = new NamespacedKey(plugin, "finemaps_placed");
+        this.groupIdKey = new NamespacedKey(plugin, "finemaps_group");
+        this.gridPositionKey = new NamespacedKey(plugin, "finemaps_grid");
+        this.singleMapIdKey = new NamespacedKey(plugin, "finemaps_map");
     }
 
     @EventHandler(priority = EventPriority.HIGH)
@@ -180,6 +190,16 @@ public class ItemFrameListener implements Listener {
         
         ItemFrame frame = (ItemFrame) event.getRightClicked();
         Player player = event.getPlayer();
+
+        // Debug inspect (stick + toggle)
+        if (plugin.isDebug(player)) {
+            ItemStack hand = player.getInventory().getItemInMainHand();
+            if (hand != null && hand.getType() == Material.STICK) {
+                printFrameDebug(player, frame);
+                event.setCancelled(true); // prevent rotating the map while inspecting
+                return;
+            }
+        }
         
         // Check if frame contains a stored map
         ItemStack frameItem = frame.getItem();
@@ -215,5 +235,43 @@ public class ItemFrameListener implements Listener {
                 }, 1L);
             }
         }
+    }
+
+    private void printFrameDebug(Player player, ItemFrame frame) {
+        Location loc = frame.getLocation();
+        Vector dir = frame.getLocation().getDirection();
+        PersistentDataContainer entityPdc = frame.getPersistentDataContainer();
+
+        Long entityGroupId = entityPdc.get(groupIdKey, PersistentDataType.LONG);
+        String entityGrid = entityPdc.get(gridPositionKey, PersistentDataType.STRING);
+        Byte placed = entityPdc.get(placedKey, PersistentDataType.BYTE);
+        Long singleMapId = entityPdc.get(singleMapIdKey, PersistentDataType.LONG);
+
+        ItemStack item = frame.getItem();
+        long itemMapId = (item != null) ? mapManager.getMapIdFromItem(item) : -1;
+        long itemGroupId = (item != null) ? mapManager.getGroupIdFromItem(item) : -1;
+        String itemGrid = null;
+        if (item != null && item.hasItemMeta() && item.getItemMeta() != null) {
+            itemGrid = item.getItemMeta().getPersistentDataContainer().get(gridPositionKey, PersistentDataType.STRING);
+        }
+
+        player.sendMessage(ChatColor.GOLD + "=== FineMaps Frame Debug ===");
+        player.sendMessage(ChatColor.YELLOW + "World: " + ChatColor.WHITE + (loc.getWorld() != null ? loc.getWorld().getName() : "<null>"));
+        player.sendMessage(ChatColor.YELLOW + "Block: " + ChatColor.WHITE + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ());
+        player.sendMessage(ChatColor.YELLOW + "Facing: " + ChatColor.WHITE + frame.getFacing() +
+            ChatColor.GRAY + " | Rotation: " + ChatColor.WHITE + frame.getRotation());
+        player.sendMessage(ChatColor.YELLOW + "Dir: " + ChatColor.WHITE +
+            String.format("%.2f, %.2f, %.2f", dir.getX(), dir.getY(), dir.getZ()));
+        player.sendMessage(ChatColor.YELLOW + "Item: " + ChatColor.WHITE + (item != null ? item.getType().name() : "<null>") +
+            ChatColor.GRAY + " | storedMap=" + ChatColor.WHITE + (item != null && mapManager.isStoredMap(item)));
+
+        player.sendMessage(ChatColor.YELLOW + "Item mapId: " + ChatColor.WHITE + itemMapId +
+            ChatColor.GRAY + " | item groupId: " + ChatColor.WHITE + itemGroupId +
+            ChatColor.GRAY + " | item grid: " + ChatColor.WHITE + (itemGrid != null ? itemGrid : "<none>"));
+
+        player.sendMessage(ChatColor.YELLOW + "Entity groupId: " + ChatColor.WHITE + (entityGroupId != null ? entityGroupId : -1) +
+            ChatColor.GRAY + " | entity grid: " + ChatColor.WHITE + (entityGrid != null ? entityGrid : "<none>") +
+            ChatColor.GRAY + " | placed: " + ChatColor.WHITE + ((placed != null && placed != 0) ? "1" : "0") +
+            ChatColor.GRAY + " | singleMapId: " + ChatColor.WHITE + (singleMapId != null ? singleMapId : -1));
     }
 }

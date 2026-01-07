@@ -47,6 +47,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         switch (subCommand) {
             case "create":
                 return handleCreate(sender, args);
+            case "debug":
+                return handleDebug(sender, args);
             case "url":
             case "fromurl":
                 return handleFromUrl(sender, args);
@@ -87,6 +89,53 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                           ChatColor.GRAY + " - Show statistics");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps reload" + 
                           ChatColor.GRAY + " - Reload config");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps debug [on|off|toggle]" +
+                          ChatColor.GRAY + " - Toggle stick right-click debug output");
+    }
+
+    private boolean handleDebug(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(ChatColor.RED + "This command can only be used by players.");
+            return true;
+        }
+
+        Player player = (Player) sender;
+        if (!player.hasPermission("finemaps.debug")) {
+            player.sendMessage(ChatColor.RED + "You don't have permission to use debug mode.");
+            return true;
+        }
+
+        boolean enabled;
+        if (args.length >= 2) {
+            String mode = args[1].toLowerCase();
+            switch (mode) {
+                case "on":
+                case "enable":
+                    plugin.setDebug(player, true);
+                    enabled = true;
+                    break;
+                case "off":
+                case "disable":
+                    plugin.setDebug(player, false);
+                    enabled = false;
+                    break;
+                case "toggle":
+                    enabled = plugin.toggleDebug(player);
+                    break;
+                default:
+                    player.sendMessage(ChatColor.RED + "Usage: /finemaps debug [on|off|toggle]");
+                    return true;
+            }
+        } else {
+            enabled = plugin.toggleDebug(player);
+        }
+
+        player.sendMessage(ChatColor.YELLOW + "FineMaps debug: " +
+            (enabled ? ChatColor.GREEN + "ON" : ChatColor.RED + "OFF"));
+        if (enabled) {
+            player.sendMessage(ChatColor.GRAY + "Right-click an item frame with a stick to print its info.");
+        }
+        return true;
     }
 
     private boolean handleCreate(CommandSender sender, String[] args) {
@@ -530,12 +579,15 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             return filterStartsWith(args[0], Arrays.asList(
-                "url", "get", "delete", "list", "info", "stats", "reload", "create"
+                "url", "get", "delete", "list", "info", "stats", "reload", "create", "debug"
             ));
         }
 
         if (args.length == 2) {
             String sub = args[0].toLowerCase();
+            if (sub.equals("debug")) {
+                return filterStartsWith(args[1], Arrays.asList("on", "off", "toggle"));
+            }
             if (sub.equals("url") || sub.equals("fromurl")) {
                 return Collections.singletonList("<name>");
             }

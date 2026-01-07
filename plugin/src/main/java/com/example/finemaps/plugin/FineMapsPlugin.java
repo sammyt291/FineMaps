@@ -16,10 +16,14 @@ import com.example.finemaps.plugin.listener.ItemFrameListener;
 import com.example.finemaps.plugin.listener.MapInteractListener;
 import com.example.finemaps.plugin.listener.PlayerListener;
 import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 import redempt.redlib.config.ConfigManager;
 
 import java.io.File;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -36,6 +40,7 @@ public class FineMapsPlugin extends JavaPlugin {
     private MapManager mapManager;
     private MultiBlockMapHandler multiBlockHandler;
     private ConfigManager configManager;
+    private final Set<UUID> debugPlayers = ConcurrentHashMap.newKeySet();
 
     @Override
     public void onEnable() {
@@ -108,6 +113,8 @@ public class FineMapsPlugin extends JavaPlugin {
         if (database != null) {
             database.shutdown();
         }
+
+        debugPlayers.clear();
         
         instance = null;
         getLogger().info("FineMaps disabled.");
@@ -244,5 +251,32 @@ public class FineMapsPlugin extends JavaPlugin {
      */
     public NMSAdapter getNmsAdapter() {
         return nmsAdapter;
+    }
+
+    /**
+     * Toggles per-player debug mode (used by stick right-click inspection).
+     */
+    public boolean toggleDebug(Player player) {
+        if (player == null) return false;
+        UUID id = player.getUniqueId();
+        if (debugPlayers.contains(id)) {
+            debugPlayers.remove(id);
+            return false;
+        }
+        debugPlayers.add(id);
+        return true;
+    }
+
+    public void setDebug(Player player, boolean enabled) {
+        if (player == null) return;
+        if (enabled) {
+            debugPlayers.add(player.getUniqueId());
+        } else {
+            debugPlayers.remove(player.getUniqueId());
+        }
+    }
+
+    public boolean isDebug(Player player) {
+        return player != null && debugPlayers.contains(player.getUniqueId());
     }
 }
