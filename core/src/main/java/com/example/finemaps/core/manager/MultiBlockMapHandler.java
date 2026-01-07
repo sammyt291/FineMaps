@@ -413,6 +413,18 @@ public class MultiBlockMapHandler {
             scaleZ = (float) (Math.abs(placement.right.getModZ()) * width + Math.abs(placement.down.getModZ()) * height);
         }
 
+        // The anchor/start locations are in the air blocks where the frames would go.
+        // The visual "surface" we want to be flush with is the block face behind that air block,
+        // which is 0.5 blocks away from the air-block center. Offset back toward the supporting block,
+        // leaving half the display thickness on the air side so it doesn't clip into the block.
+        final double normalOffset = 0.5 - (thickness / 2.0);
+        BlockFace supportFace = facing.getOppositeFace();
+        center.add(
+            supportFace.getModX() * normalOffset,
+            supportFace.getModY() * normalOffset,
+            supportFace.getModZ() * normalOffset
+        );
+
         int displayId = mapManager.getNmsAdapter().spawnPreviewBlockDisplay(center, valid, scaleX, scaleY, scaleZ);
         if (displayId != -1) {
             playerPreviewDisplay.put(player.getUniqueId(), displayId);
