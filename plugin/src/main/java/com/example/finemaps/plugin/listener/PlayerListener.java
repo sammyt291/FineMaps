@@ -96,13 +96,18 @@ public class PlayerListener implements Listener {
             return;
         }
         
-        // Only handle main hand
-        if (event.getHand() != EquipmentSlot.HAND) {
+        // Only handle hands (ignore physical, etc.)
+        if (event.getHand() != EquipmentSlot.HAND && event.getHand() != EquipmentSlot.OFF_HAND) {
             return;
         }
         
         Player player = event.getPlayer();
-        ItemStack item = player.getInventory().getItemInMainHand();
+        ItemStack item = event.getItem();
+        if (item == null) {
+            item = (event.getHand() == EquipmentSlot.OFF_HAND)
+                ? player.getInventory().getItemInOffHand()
+                : player.getInventory().getItemInMainHand();
+        }
 
         // Check if holding a stored map (single or multi-block)
         if (item == null || !mapManager.isStoredMap(item)) {
@@ -112,7 +117,7 @@ public class PlayerListener implements Listener {
         // This is a stored map - try to place it using the placement system
         event.setCancelled(true);
 
-        multiBlockHandler.tryPlaceStoredMap(player, item);
+        multiBlockHandler.tryPlaceStoredMap(player, item, event.getHand());
     }
     
     /**
@@ -123,8 +128,11 @@ public class PlayerListener implements Listener {
     private void checkAndStartPreview(Player player) {
         if (!player.isOnline()) return;
         
-        ItemStack held = player.getInventory().getItemInMainHand();
-        if (held != null && mapManager.isStoredMap(held)) {
+        ItemStack main = player.getInventory().getItemInMainHand();
+        ItemStack off = player.getInventory().getItemInOffHand();
+        ItemStack held = (main != null && mapManager.isStoredMap(main)) ? main :
+                         (off != null && mapManager.isStoredMap(off)) ? off : null;
+        if (held != null) {
             // Start preview for stored map (single or multi-block)
             multiBlockHandler.startPreviewTask(player);
         }

@@ -16,6 +16,7 @@ import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.RayTraceResult;
+import org.bukkit.inventory.EquipmentSlot;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -173,7 +174,11 @@ public class MultiBlockMapHandler {
                     return;
                 }
                 
+                // Prefer main-hand, fall back to off-hand
                 ItemStack held = p.getInventory().getItemInMainHand();
+                if (held == null || !mapManager.isStoredMap(held)) {
+                    held = p.getInventory().getItemInOffHand();
+                }
                 if (held == null || !mapManager.isStoredMap(held)) {
                     clearPreview(p);
                     stopPreviewTask(p);
@@ -363,8 +368,6 @@ public class MultiBlockMapHandler {
 
         // Wall placement (existing behavior)
         Location startLoc = calculateStartLocation(anchorLoc, facing, width, height);
-        // User preference: walls should be 2 blocks lower.
-        startLoc.add(0, -2, 0);
         BlockFace rightDir = getRight(facing);
         return new PlacementGeometry(startLoc, rightDir, null, true);
     }
@@ -658,13 +661,22 @@ public class MultiBlockMapHandler {
      * @return true if placed successfully
      */
     public boolean tryPlaceStoredMap(Player player, ItemStack item) {
+        return tryPlaceStoredMap(player, item, EquipmentSlot.HAND);
+    }
+
+    public boolean tryPlaceStoredMap(Player player, ItemStack item, EquipmentSlot hand) {
         if (player == null || item == null || !mapManager.isStoredMap(item)) {
             return false;
         }
 
         long groupId = mapManager.getGroupIdFromItem(item);
         if (groupId > 0) {
-            return tryPlaceMultiBlockMap(player, item);
+            // Multi-block placement already consumes from main hand; if item is in offhand, consume there.
+            boolean success = tryPlaceMultiBlockMap(player, item);
+            if (success && hand == EquipmentSlot.OFF_HAND) {
+                consumeFromHand(player, item, hand);
+            }
+            return success;
         }
 
         long mapId = mapManager.getMapIdFromItem(item);
@@ -674,20 +686,30 @@ public class MultiBlockMapHandler {
 
         boolean success = tryPlaceSingleMap(player, mapId);
         if (success) {
-            // Remove item from player's hand
-            ItemStack handItem = player.getInventory().getItemInMainHand();
-            if (handItem != null && handItem.isSimilar(item)) {
-                if (handItem.getAmount() > 1) {
-                    handItem.setAmount(handItem.getAmount() - 1);
-                } else {
-                    player.getInventory().setItemInMainHand(null);
-                }
-            }
+            consumeFromHand(player, item, hand);
 
             player.sendMessage(ChatColor.GREEN + "Map placed!");
             stopPreviewTask(player);
         }
         return success;
+    }
+
+    private void consumeFromHand(Player player, ItemStack item, EquipmentSlot hand) {
+        if (player == null) return;
+        ItemStack handItem = (hand == EquipmentSlot.OFF_HAND)
+            ? player.getInventory().getItemInOffHand()
+            : player.getInventory().getItemInMainHand();
+        if (handItem == null || !handItem.isSimilar(item)) return;
+
+        if (handItem.getAmount() > 1) {
+            handItem.setAmount(handItem.getAmount() - 1);
+        } else {
+            if (hand == EquipmentSlot.OFF_HAND) {
+                player.getInventory().setItemInOffHand(null);
+            } else {
+                player.getInventory().setItemInMainHand(null);
+            }
+        }
     }
 
     private boolean tryPlaceSingleMap(Player player, long mapId) {
@@ -1042,14 +1064,19 @@ public class MultiBlockMapHandler {
         World world = startLocation.getWorld();
         if (world == null) return false;
         
-        // Calculate placement geometry based on facing direction.
-        // For floor/ceiling placement, orientation is taken from the player if available.
-        PlacementGeometry placement = calculatePlacementGeometry(player, startLocation, facing, multiMap.getWidth(), multiMap.getHeight());
-        if (placement == null) {
-            if (player != null) {
-                player.sendMessage(ChatColor.RED + "Cannot place map here.");
-            }
-            return false;
+        // `startLocation` is already the computed top-left for the placement.
+        // Do NOT recompute it again (that causes preview/placement mismatches).
+        PlacementGeometry placement;
+        if (facing == BlockFace.UP || facing == BlockFace.DOWN) {
+            BlockFace desiredUp = (player != null)
+                ? getHorizontalFacing(player.getLocation().getYaw())
+                : BlockFace.NORTH;
+            BlockFace downDir = desiredUp.getOppositeFace();
+            BlockFace rightDir = getRightOfPlayerFacing(desiredUp);
+            if (facing == BlockFace.DOWN) rightDir = rightDir.getOppositeFace();
+            placement = new PlacementGeometry(startLocation, rightDir, downDir, false);
+        } else {
+            placement = new PlacementGeometry(startLocation, getRight(facing), null, true);
         }
         
         // Check if all positions are valid
@@ -1223,30 +1250,13 @@ public class MultiBlockMapHandler {
      * @return The top-left start location for placement
      */
     private Location calculateStartLocation(Location clickedLoc, BlockFace facing, int width, int height) {
-        // Determine anchor position in grid coordinates
-        // For odd width: center column (width/2 with integer division)
-        // For even width: right-of-center column (width/2)
-        // Both cases: bottom row (height-1)
-        int anchorX = width / 2;  // Works for both odd and even
-        int anchorY = height - 1; // Bottom row
-        
-        // Get the right direction (from viewer's perspective)
-        BlockFace rightDir = getRight(facing);
-        
-        // Calculate the offset from the start location to the anchor
-        // The placement code does: loc = startLoc + rightDir * x - (0, y, 0)
-        // So: anchor = startLoc + rightDir * anchorX - (0, anchorY, 0)
-        // Therefore: startLoc = anchor - rightDir * anchorX + (0, anchorY, 0)
-        
-        Location startLoc = clickedLoc.clone();
-        
-        // Move LEFT (opposite of right) by anchorX blocks
-        startLoc.add(-rightDir.getModX() * anchorX, 0, -rightDir.getModZ() * anchorX);
-        
-        // Move UP by anchorY blocks (since placement goes down with -y)
-        startLoc.add(0, anchorY, 0);
-        
-        return startLoc;
+        // Anchor the placement at the player's cursor location:
+        // the block they are targeting is the BOTTOM-LEFT tile of the image.
+        //
+        // For wall placement, y increases downward in `locationAt(x, y)` (via -y).
+        // Bottom-left is (x=0, y=height-1), so:
+        // anchor = startLoc - (0, height-1, 0)  =>  startLoc = anchor + (0, height-1, 0)
+        return clickedLoc.clone().add(0, height - 1, 0);
     }
 
     /**
@@ -1257,19 +1267,13 @@ public class MultiBlockMapHandler {
      * - y axis: downDir (horizontal, toward the bottom of the image)
      */
     private Location calculateStartLocationHorizontal(Location clickedLoc, BlockFace rightDir, BlockFace downDir, int width, int height) {
-        int anchorX = width / 2;
-        int anchorY = height - 1;
-
-        Location startLoc = clickedLoc.clone();
-
-        // Move LEFT by anchorX
-        startLoc.add(-rightDir.getModX() * anchorX, 0, -rightDir.getModZ() * anchorX);
-
-        // Move "UP" (opposite of down) by anchorY
+        // Anchor the placement at the player's cursor location:
+        // the block they are targeting is the BOTTOM-LEFT tile of the image.
+        //
+        // For floor/ceiling placement, bottom-left is (x=0, y=height-1) in our (right, down) axes:
+        // anchor = startLoc + downDir*(height-1)  =>  startLoc = anchor - downDir*(height-1)
         BlockFace upDir = downDir.getOppositeFace();
-        startLoc.add(upDir.getModX() * anchorY, 0, upDir.getModZ() * anchorY);
-
-        return startLoc;
+        return clickedLoc.clone().add(upDir.getModX() * (height - 1), 0, upDir.getModZ() * (height - 1));
     }
 
     /**
