@@ -304,7 +304,7 @@ public class ItemFrameListener implements Listener {
             ChatColor.GRAY + " | quarterTurns(ordinal%4)=" + ChatColor.WHITE + quarterTurns);
 
         if (facing == BlockFace.UP) {
-            player.sendMessage(ChatColor.YELLOW + "Map top dir (FLOOR, NONE baseline≈EAST): " + ChatColor.WHITE + floorTop);
+            player.sendMessage(ChatColor.YELLOW + "Map top dir (FLOOR, NONE baseline≈NORTH): " + ChatColor.WHITE + floorTop);
         } else if (facing == BlockFace.DOWN) {
             player.sendMessage(ChatColor.YELLOW + "Map top dir (CEILING, NONE baseline≈SOUTH): " + ChatColor.WHITE + "cw-from-below=" + ceilingTopCwFromBelow +
                 ChatColor.GRAY + " | cw-from-above=" + ChatColor.WHITE + ceilingTopCwFromAbove);
@@ -340,17 +340,17 @@ public class ItemFrameListener implements Listener {
     }
 
     /**
-     * Floor frames (facing UP): per user observation, NONE makes map-top point EAST.
+     * Floor frames (facing UP): per user observation, NONE makes map-top point NORTH.
      * Each effective quarter turn rotates 90° clockwise around +Y when viewed from above.
      */
     private BlockFace topDirectionOnFloor(int quarterTurns) {
         if (quarterTurns < 0) return null;
         switch (quarterTurns & 3) {
-            case 0: return BlockFace.EAST;
-            case 1: return BlockFace.SOUTH;
-            case 2: return BlockFace.WEST;
-            case 3: return BlockFace.NORTH;
-            default: return BlockFace.EAST;
+            case 0: return BlockFace.NORTH;
+            case 1: return BlockFace.EAST;
+            case 2: return BlockFace.SOUTH;
+            case 3: return BlockFace.WEST;
+            default: return BlockFace.NORTH;
         }
     }
 
