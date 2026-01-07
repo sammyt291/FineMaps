@@ -1225,18 +1225,24 @@ public class MultiBlockMapHandler {
      * Gets the direction we advance X+ for wall placement.
      * 
      * Note: Map rendering in item frames effectively mirrors left/right on walls across versions,
-     * so for multi-block composition we treat X+ as the VIEWER'S LEFT (not right).
-     *
-     * This ensures that the stored tile grid (x=0..w-1 from the source image) lines up
-     * visually left-to-right when placed on a wall.
+     * and this mirroring is not consistent across all facings (N/S vs E/W).
+     * 
+     * Empirically (client rendering of maps-in-frames):
+     * - For NORTH/SOUTH-facing frames, advancing X+ must follow the viewer's RIGHT.
+     * - For EAST/WEST-facing frames, advancing X+ must follow the viewer's LEFT.
+     * 
+     * This keeps the stored tile grid (x=0..w-1 from the source image) in visual left-to-right order.
      */
     private BlockFace getRight(BlockFace facing) {
         switch (facing) {
-            case NORTH: return BlockFace.EAST;  // Viewer looking south, their left is east
-            case SOUTH: return BlockFace.WEST;  // Viewer looking north, their left is west
-            case EAST: return BlockFace.NORTH;  // Viewer looking west, their left is north
-            case WEST: return BlockFace.SOUTH;  // Viewer looking east, their left is south
-            default: return BlockFace.EAST;
+            // NORTH/SOUTH: X+ = viewerRight
+            case NORTH: return BlockFace.WEST;  // Viewer looks NORTH, right is WEST
+            case SOUTH: return BlockFace.EAST;  // Viewer looks SOUTH, right is EAST
+
+            // EAST/WEST: X+ = viewerLeft
+            case EAST: return BlockFace.NORTH;  // Viewer looks EAST, left is NORTH
+            case WEST: return BlockFace.SOUTH;  // Viewer looks WEST, left is SOUTH
+            default: return BlockFace.WEST;
         }
     }
 

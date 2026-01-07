@@ -286,6 +286,7 @@ public class ItemFrameListener implements Listener {
 
         BlockFace facing = frame.getFacing();
         BlockFace wallRight = rightFromViewer(facing);
+        BlockFace placementXPlus = placementXPlusForWallFacing(facing);
         BlockFace wallTop = topDirectionOnWall(wallRight, quarterTurns);
 
         BlockFace floorTop = topDirectionOnFloor(quarterTurns);
@@ -324,7 +325,7 @@ public class ItemFrameListener implements Listener {
         } else {
             player.sendMessage(ChatColor.YELLOW + "Map top dir (WALL, NONE baseline=UP): " + ChatColor.WHITE + wallTop +
                 ChatColor.GRAY + " | viewerRight=" + ChatColor.WHITE + wallRight +
-                ChatColor.GRAY + " | placementX+=" + ChatColor.WHITE + (wallRight != null ? wallRight.getOppositeFace() : "<null>"));
+                ChatColor.GRAY + " | placementX+=" + ChatColor.WHITE + placementXPlus);
         }
     }
 
@@ -350,6 +351,21 @@ public class ItemFrameListener implements Listener {
             case 2: return BlockFace.DOWN;
             case 3: return viewerRight.getOppositeFace();
             default: return BlockFace.UP;
+        }
+    }
+
+    /**
+     * Must mirror the wall placement X+ direction used in MultiBlockMapHandler#getRight().
+     */
+    private BlockFace placementXPlusForWallFacing(BlockFace facing) {
+        switch (facing) {
+            // NORTH/SOUTH: X+ = viewerRight
+            case NORTH: return BlockFace.WEST;
+            case SOUTH: return BlockFace.EAST;
+            // EAST/WEST: X+ = viewerLeft
+            case EAST: return BlockFace.NORTH;
+            case WEST: return BlockFace.SOUTH;
+            default: return null;
         }
     }
 
