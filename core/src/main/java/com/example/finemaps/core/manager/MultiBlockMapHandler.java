@@ -53,6 +53,8 @@ public class MultiBlockMapHandler {
     
     private final NamespacedKey groupIdKey;
     private final NamespacedKey gridPositionKey;
+    private final NamespacedKey placedKey;
+    private final NamespacedKey singleMapIdKey;
     
     // Preview particle colors - using Particle.DustOptions if available
     private Object validPreviewDust;
@@ -65,6 +67,8 @@ public class MultiBlockMapHandler {
         this.mapManager = mapManager;
         this.groupIdKey = new NamespacedKey(plugin, "finemaps_group");
         this.gridPositionKey = new NamespacedKey(plugin, "finemaps_grid");
+        this.placedKey = new NamespacedKey(plugin, "finemaps_placed");
+        this.singleMapIdKey = new NamespacedKey(plugin, "finemaps_map");
         
         // Check if block displays are supported (prefer them over particles)
         this.useBlockDisplays = mapManager.getNmsAdapter().supportsBlockDisplays();
@@ -140,7 +144,7 @@ public class MultiBlockMapHandler {
     }
     
     /**
-     * Starts the preview task for a player holding a multi-block map.
+     * Starts the preview task for a player holding a stored map item (single or multi-block).
      *
      * @param player The player
      */
@@ -170,17 +174,18 @@ public class MultiBlockMapHandler {
                 }
                 
                 ItemStack held = p.getInventory().getItemInMainHand();
-                long groupId = mapManager.getGroupIdFromItem(held);
-                
-                if (groupId <= 0) {
+                if (held == null || !mapManager.isStoredMap(held)) {
                     clearPreview(p);
                     stopPreviewTask(p);
                     cancel();
                     return;
                 }
-                
-                // Show preview outline
-                showPlacementPreview(p, held, groupId);
+
+                // Show preview outline (1x1 for single maps, WxH for multi-block items)
+                long groupId = mapManager.getGroupIdFromItem(held);
+                int width = groupId > 0 ? mapManager.getMultiBlockWidth(held) : 1;
+                int height = groupId > 0 ? mapManager.getMultiBlockHeight(held) : 1;
+                showPlacementPreview(p, held, width, height);
             }
         }.runTaskTimer(plugin, 0L, 4L); // Update every 4 ticks (0.2s)
         
@@ -229,13 +234,14 @@ public class MultiBlockMapHandler {
     }
 
     /**
-     * Shows a placement preview for the multi-block map.
+     * Shows a placement preview for a stored map item.
      *
      * @param player The player
      * @param item The map item
-     * @param groupId The group ID
+     * @param width The width in blocks
+     * @param height The height in blocks
      */
-    private void showPlacementPreview(Player player, ItemStack item, long groupId) {
+    private void showPlacementPreview(Player player, ItemStack item, int width, int height) {
         // Ray trace to find where player is looking
         RayTraceResult result = player.rayTraceBlocks(5.0);
         if (result == null || result.getHitBlock() == null || result.getHitBlockFace() == null) {
@@ -246,10 +252,6 @@ public class MultiBlockMapHandler {
         Block hitBlock = result.getHitBlock();
         BlockFace hitFace = result.getHitBlockFace();
         
-        // Get dimensions from item
-        int width = mapManager.getMultiBlockWidth(item);
-        int height = mapManager.getMultiBlockHeight(item);
-
         // Calculate placement area (anchor is the air block the frame(s) would occupy)
         Location anchorLoc = hitBlock.getRelative(hitFace).getLocation();
         PlacementGeometry placement = calculatePlacementGeometry(player, anchorLoc, hitFace, width, height);
@@ -646,6 +648,158 @@ public class MultiBlockMapHandler {
         }
         
         return success;
+    }
+
+    /**
+     * Attempts to place a stored map item (single or multi-block) where player is looking.
+     *
+     * @param player The player
+     * @param item The held item
+     * @return true if placed successfully
+     */
+    public boolean tryPlaceStoredMap(Player player, ItemStack item) {
+        if (player == null || item == null || !mapManager.isStoredMap(item)) {
+            return false;
+        }
+
+        long groupId = mapManager.getGroupIdFromItem(item);
+        if (groupId > 0) {
+            return tryPlaceMultiBlockMap(player, item);
+        }
+
+        long mapId = mapManager.getMapIdFromItem(item);
+        if (mapId <= 0) {
+            return false;
+        }
+
+        boolean success = tryPlaceSingleMap(player, mapId);
+        if (success) {
+            // Remove item from player's hand
+            ItemStack handItem = player.getInventory().getItemInMainHand();
+            if (handItem != null && handItem.isSimilar(item)) {
+                if (handItem.getAmount() > 1) {
+                    handItem.setAmount(handItem.getAmount() - 1);
+                } else {
+                    player.getInventory().setItemInMainHand(null);
+                }
+            }
+
+            player.sendMessage(ChatColor.GREEN + "Map placed!");
+            stopPreviewTask(player);
+        }
+        return success;
+    }
+
+    private boolean tryPlaceSingleMap(Player player, long mapId) {
+        // Ray trace to find where player is looking
+        RayTraceResult result = player.rayTraceBlocks(5.0);
+        if (result == null || result.getHitBlock() == null || result.getHitBlockFace() == null) {
+            player.sendMessage(ChatColor.RED + "Look at a block face to place the map.");
+            return false;
+        }
+
+        Block hitBlock = result.getHitBlock();
+        BlockFace hitFace = result.getHitBlockFace();
+        Location clickedLoc = hitBlock.getRelative(hitFace).getLocation();
+
+        PlacementGeometry placement = calculatePlacementGeometry(player, clickedLoc, hitFace, 1, 1);
+        if (placement == null) {
+            player.sendMessage(ChatColor.RED + "Cannot place map here.");
+            return false;
+        }
+
+        World world = clickedLoc.getWorld();
+        if (world == null) return false;
+
+        Location loc = placement.locationAt(0, 0);
+        Block airBlock = loc.getBlock();
+        Block behindBlock = airBlock.getRelative(hitFace.getOppositeFace());
+
+        if (!airBlock.getType().isAir()) {
+            player.sendMessage(ChatColor.RED + "Not enough space to place map.");
+            return false;
+        }
+        if (!behindBlock.getType().isSolid()) {
+            player.sendMessage(ChatColor.RED + "Need a solid block behind.");
+            return false;
+        }
+        for (Entity entity : world.getNearbyEntities(loc.clone().add(0.5, 0.5, 0.5), 0.5, 0.5, 0.5)) {
+            if (entity instanceof ItemFrame) {
+                player.sendMessage(ChatColor.RED + "There's already an item frame in the way.");
+                return false;
+            }
+        }
+
+        // Collect nearby players so map renders immediately
+        Collection<Player> nearbyPlayers = world.getNearbyEntities(loc, 64, 64, 64).stream()
+            .filter(e -> e instanceof Player)
+            .map(e -> (Player) e)
+            .collect(java.util.stream.Collectors.toList());
+
+        // Spawn item frame
+        ItemFrame frame = world.spawn(loc, ItemFrame.class);
+        frame.setFacingDirection(hitFace);
+
+        if (hitFace == BlockFace.UP || hitFace == BlockFace.DOWN) {
+            BlockFace desiredUp = getHorizontalFacing(player.getLocation().getYaw());
+            Rotation rot = rotationForFloorCeiling(desiredUp, hitFace == BlockFace.DOWN);
+            try {
+                frame.setRotation(rot);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        try {
+            frame.setFixed(true);
+        } catch (NoSuchMethodError ignored) {
+        }
+
+        ItemStack mapItem = mapManager.createMapItem(mapId);
+        frame.setItem(mapItem);
+        frame.setVisible(false);
+
+        // Mark as placed by FineMaps so we can break without dropping a frame item.
+        PersistentDataContainer framePdc = frame.getPersistentDataContainer();
+        framePdc.set(placedKey, PersistentDataType.BYTE, (byte) 1);
+        framePdc.set(singleMapIdKey, PersistentDataType.LONG, mapId);
+
+        for (Player nearbyPlayer : nearbyPlayers) {
+            mapManager.sendMapToPlayer(nearbyPlayer, mapId);
+        }
+
+        return true;
+    }
+
+    /**
+     * Handles breaking a FineMaps-placed single map (no item frame drops).
+     *
+     * @return true if handled
+     */
+    public boolean onPlacedSingleMapBreak(ItemFrame itemFrame, Player player) {
+        if (itemFrame == null) return false;
+
+        PersistentDataContainer pdc = itemFrame.getPersistentDataContainer();
+        Byte placed = pdc.get(placedKey, PersistentDataType.BYTE);
+        Long mapId = pdc.get(singleMapIdKey, PersistentDataType.LONG);
+        if (placed == null || placed == 0 || mapId == null || mapId <= 0) {
+            return false;
+        }
+
+        ItemStack item = itemFrame.getItem();
+        if (item == null || !mapManager.isStoredMap(item) || mapManager.getGroupIdFromItem(item) > 0) {
+            return false;
+        }
+
+        Location loc = itemFrame.getLocation();
+        World world = loc.getWorld();
+        if (world == null) return false;
+
+        // Remove the frame and drop only the map item
+        itemFrame.remove();
+        ItemStack drop = item.clone();
+        drop.setAmount(1);
+        world.dropItemNaturally(loc, drop);
+        return true;
     }
 
     /**

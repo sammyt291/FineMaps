@@ -16,6 +16,9 @@ import org.bukkit.event.hanging.HangingPlaceEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.NamespacedKey;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
 
 /**
  * Handles item frame events for multi-block map management.
@@ -25,11 +28,13 @@ public class ItemFrameListener implements Listener {
     private final FineMapsPlugin plugin;
     private final MapManager mapManager;
     private final MultiBlockMapHandler multiBlockHandler;
+    private final NamespacedKey placedKey;
 
     public ItemFrameListener(FineMapsPlugin plugin) {
         this.plugin = plugin;
         this.mapManager = plugin.getMapManager();
         this.multiBlockHandler = plugin.getMultiBlockHandler();
+        this.placedKey = new NamespacedKey(plugin, "finemaps_placed");
     }
 
     @EventHandler(priority = EventPriority.HIGH)
@@ -73,7 +78,29 @@ public class ItemFrameListener implements Listener {
         
         long groupId = mapManager.getGroupIdFromItem(frameItem);
         if (groupId <= 0) {
-            // Not a multi-block map, just a single map - allow normal break
+            // Single map: only handle frames placed by FineMaps (marker on entity)
+            PersistentDataContainer pdc = frame.getPersistentDataContainer();
+            Byte placed = pdc.get(placedKey, PersistentDataType.BYTE);
+            if (placed == null || placed == 0) {
+                return; // Vanilla single-map-in-frame behavior
+            }
+
+            event.setCancelled(true);
+
+            // Determine the player who broke it
+            Player player = null;
+            if (event instanceof HangingBreakByEntityEvent) {
+                HangingBreakByEntityEvent byEntity = (HangingBreakByEntityEvent) event;
+                Entity remover = byEntity.getRemover();
+                if (remover instanceof Player) {
+                    player = (Player) remover;
+                }
+            }
+
+            final Player finalPlayer = player;
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                multiBlockHandler.onPlacedSingleMapBreak(frame, finalPlayer);
+            });
             return;
         }
         
@@ -115,7 +142,18 @@ public class ItemFrameListener implements Listener {
         // Check if this is part of a multi-block map
         long groupId = mapManager.getGroupIdFromItem(frameItem);
         if (groupId <= 0) {
-            return; // Single map, let normal behavior happen
+            // Single map: if placed by FineMaps, break without dropping a frame
+            PersistentDataContainer pdc = frame.getPersistentDataContainer();
+            Byte placed = pdc.get(placedKey, PersistentDataType.BYTE);
+            if (placed == null || placed == 0) {
+                return;
+            }
+            Player player = (damager instanceof Player) ? (Player) damager : null;
+            event.setCancelled(true);
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                multiBlockHandler.onPlacedSingleMapBreak(frame, player);
+            });
+            return;
         }
         
         // This is a multi-block map - cancel and handle ourselves
