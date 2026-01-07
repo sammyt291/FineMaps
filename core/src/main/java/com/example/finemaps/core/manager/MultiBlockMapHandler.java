@@ -334,16 +334,26 @@ public class MultiBlockMapHandler {
 
     private PlacementGeometry calculatePlacementGeometry(Player player, Location anchorLoc, BlockFace facing, int width, int height) {
         if (facing == BlockFace.UP || facing == BlockFace.DOWN) {
-            // Floor/ceiling placement: keep a consistent world orientation (north-up).
-            // This avoids per-cardinal shifts/order differences when placing on the floor.
+            // Floor/ceiling placement: allow rotating by player cardinal direction.
+            // We define "up" (top of the image) as the direction the player is facing:
+            // - NORTH: 0°
+            // - EAST: 90°
+            // - SOUTH: 180°
+            // - WEST: 270°
+            BlockFace desiredUp = (player != null)
+                ? getHorizontalFacing(player.getLocation().getYaw())
+                : BlockFace.NORTH;
+
             // Image coordinate system:
-            // - "up" (top of the image) = NORTH
-            // - "right" = EAST
-            // - "down" (bottom of the image) = SOUTH
-            BlockFace downDir = BlockFace.SOUTH;
-            BlockFace rightDir = BlockFace.EAST;
-            // Ceiling placement is mirrored when viewed from below, so flip horizontal axis.
-            if (facing == BlockFace.DOWN) rightDir = rightDir.getOppositeFace();
+            // - x axis: rightDir (clockwise from desiredUp)
+            // - y axis: downDir (opposite of desiredUp)
+            BlockFace downDir = desiredUp.getOppositeFace();
+            BlockFace rightDir = getRightOfPlayerFacing(desiredUp);
+
+            // Ceiling placement is mirrored (viewer is underneath), so flip horizontal axis.
+            if (facing == BlockFace.DOWN) {
+                rightDir = rightDir.getOppositeFace();
+            }
 
             Location startLoc = calculateStartLocationHorizontal(anchorLoc, rightDir, downDir, width, height);
             return new PlacementGeometry(startLoc, rightDir, downDir, false);
@@ -351,6 +361,8 @@ public class MultiBlockMapHandler {
 
         // Wall placement (existing behavior)
         Location startLoc = calculateStartLocation(anchorLoc, facing, width, height);
+        // User preference: walls should be 2 blocks lower.
+        startLoc.add(0, -2, 0);
         BlockFace rightDir = getRight(facing);
         return new PlacementGeometry(startLoc, rightDir, null, true);
     }
@@ -930,7 +942,10 @@ public class MultiBlockMapHandler {
         if (facing == BlockFace.UP || facing == BlockFace.DOWN) {
             // Keep a consistent world orientation (north-up) for floor/ceiling frames.
             // When viewed from below (ceiling), the rotation direction appears inverted.
-            floorCeilingRotation = rotationForFloorCeiling(BlockFace.NORTH, facing == BlockFace.DOWN);
+            BlockFace desiredUp = (player != null)
+                ? getHorizontalFacing(player.getLocation().getYaw())
+                : BlockFace.NORTH;
+            floorCeilingRotation = rotationForFloorCeiling(desiredUp, facing == BlockFace.DOWN);
         }
 
         for (int y = 0; y < multiMap.getHeight(); y++) {
