@@ -334,16 +334,16 @@ public class MultiBlockMapHandler {
 
     private PlacementGeometry calculatePlacementGeometry(Player player, Location anchorLoc, BlockFace facing, int width, int height) {
         if (facing == BlockFace.UP || facing == BlockFace.DOWN) {
-            // Floor/ceiling placement: determine orientation from player yaw.
-            BlockFace playerFacing = (player != null)
-                ? getHorizontalFacing(player.getLocation().getYaw())
-                : BlockFace.NORTH;
-            BlockFace downDir = playerFacing.getOppositeFace(); // bottom of image toward player
-            BlockFace rightDir = getRightOfPlayerFacing(playerFacing);
-            // Ceiling placement is mirrored (viewer is underneath), so flip horizontal axis.
-            if (facing == BlockFace.DOWN) {
-                rightDir = rightDir.getOppositeFace();
-            }
+            // Floor/ceiling placement: keep a consistent world orientation (north-up).
+            // This avoids per-cardinal shifts/order differences when placing on the floor.
+            // Image coordinate system:
+            // - "up" (top of the image) = NORTH
+            // - "right" = EAST
+            // - "down" (bottom of the image) = SOUTH
+            BlockFace downDir = BlockFace.SOUTH;
+            BlockFace rightDir = BlockFace.EAST;
+            // Ceiling placement is mirrored when viewed from below, so flip horizontal axis.
+            if (facing == BlockFace.DOWN) rightDir = rightDir.getOppositeFace();
 
             Location startLoc = calculateStartLocationHorizontal(anchorLoc, rightDir, downDir, width, height);
             return new PlacementGeometry(startLoc, rightDir, downDir, false);
@@ -928,11 +928,9 @@ public class MultiBlockMapHandler {
         // Place all item frames
         Rotation floorCeilingRotation = null;
         if (facing == BlockFace.UP || facing == BlockFace.DOWN) {
-            BlockFace playerFacing = (player != null)
-                ? getHorizontalFacing(player.getLocation().getYaw())
-                : BlockFace.NORTH;
-            // Keep the top of the image facing away from the player.
-            floorCeilingRotation = rotationForFloorCeiling(playerFacing, facing == BlockFace.DOWN);
+            // Keep a consistent world orientation (north-up) for floor/ceiling frames.
+            // When viewed from below (ceiling), the rotation direction appears inverted.
+            floorCeilingRotation = rotationForFloorCeiling(BlockFace.NORTH, facing == BlockFace.DOWN);
         }
 
         for (int y = 0; y < multiMap.getHeight(); y++) {
