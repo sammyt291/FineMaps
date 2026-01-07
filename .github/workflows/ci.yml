@@ -1,0 +1,58 @@
+name: CI Build
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'fix/**'
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'gradle'
+      
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      
+      - name: Build with Gradle
+        run: ./gradlew build --no-daemon
+      
+      - name: Build shadow jar
+        run: ./gradlew :plugin:shadowJar --no-daemon
+      
+      - name: Verify jar was created
+        run: |
+          ls -la plugin/build/libs/
+          JAR_COUNT=$(ls plugin/build/libs/MapDB-*.jar 2>/dev/null | wc -l)
+          if [ "$JAR_COUNT" -gt 0 ]; then
+            echo "✅ Shadow jar created successfully"
+            ls -la plugin/build/libs/MapDB-*.jar
+          else
+            echo "❌ Shadow jar not found"
+            exit 1
+          fi
+      
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MapDB-snapshot
+          path: plugin/build/libs/MapDB-*.jar
+          retention-days: 7
