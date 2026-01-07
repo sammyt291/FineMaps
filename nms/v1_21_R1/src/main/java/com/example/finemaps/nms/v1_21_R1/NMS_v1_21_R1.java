@@ -6,6 +6,7 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
 import org.bukkit.World;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
@@ -24,7 +25,7 @@ public class NMS_v1_21_R1 implements NMSAdapter {
     private final Logger logger;
     private final boolean isFolia;
     private MapPacketListener packetListener;
-    private final Map<Integer, ItemDisplay> displayEntities = new HashMap<>();
+    private final Map<Integer, Entity> displayEntities = new HashMap<>();
     private int nextDisplayId = Integer.MAX_VALUE - 1000000;
 
     public NMS_v1_21_R1(Logger logger) {
@@ -88,14 +89,14 @@ public class NMS_v1_21_R1 implements NMSAdapter {
 
     @Override
     public void removeDisplay(int entityId) {
-        ItemDisplay display = displayEntities.remove(entityId);
+        Entity display = displayEntities.remove(entityId);
         if (display != null && display.isValid()) display.remove();
     }
 
     @Override public boolean supportsBlockDisplays() { return true; }
 
     @Override
-    public int spawnPreviewBlockDisplay(Location location, boolean valid) {
+    public int spawnPreviewBlockDisplay(Location location, boolean valid, float scaleX, float scaleY, float scaleZ) {
         try {
             World world = location.getWorld();
             if (world == null) return -1;
@@ -104,17 +105,17 @@ public class NMS_v1_21_R1 implements NMSAdapter {
                 entity.setBlock(blockMaterial.createBlockData());
                 entity.setBillboard(org.bukkit.entity.Display.Billboard.FIXED);
                 entity.setGlowing(true);
-                // Set scale to make it thin (like an outline)
+                // Set scale to match preview size/orientation
                 org.bukkit.util.Transformation t = entity.getTransformation();
                 entity.setTransformation(new org.bukkit.util.Transformation(
                     t.getTranslation(),
                     t.getLeftRotation(),
-                    new org.joml.Vector3f(1.0f, 1.0f, 0.02f),
+                    new org.joml.Vector3f(scaleX, scaleY, scaleZ),
                     t.getRightRotation()
                 ));
             });
             int displayId = nextDisplayId++;
-            // Store as ItemDisplay since we don't have a separate map
+            displayEntities.put(displayId, display);
             return displayId;
         } catch (Exception e) {
             logger.log(Level.WARNING, "Failed to spawn preview block display", e);

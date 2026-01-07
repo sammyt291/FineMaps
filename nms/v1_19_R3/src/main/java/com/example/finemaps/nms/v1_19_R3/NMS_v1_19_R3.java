@@ -5,10 +5,12 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
 import org.bukkit.World;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.MapMeta;
+import org.bukkit.util.Transformation;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -20,7 +22,7 @@ import java.util.logging.Logger;
 public class NMS_v1_19_R3 implements NMSAdapter {
 
     private final Logger logger;
-    private final Map<Integer, ItemDisplay> displayEntities = new HashMap<>();
+    private final Map<Integer, Entity> displayEntities = new HashMap<>();
     private int nextDisplayId = Integer.MAX_VALUE - 1000000;
 
     public NMS_v1_19_R3(Logger logger) {
@@ -72,14 +74,14 @@ public class NMS_v1_19_R3 implements NMSAdapter {
 
     @Override
     public void removeDisplay(int entityId) {
-        ItemDisplay display = displayEntities.remove(entityId);
+        Entity display = displayEntities.remove(entityId);
         if (display != null && display.isValid()) display.remove();
     }
 
     @Override public boolean supportsBlockDisplays() { return true; }
 
     @Override
-    public int spawnPreviewBlockDisplay(Location location, boolean valid) {
+    public int spawnPreviewBlockDisplay(Location location, boolean valid, float scaleX, float scaleY, float scaleZ) {
         try {
             World world = location.getWorld();
             if (world == null) return -1;
@@ -88,8 +90,21 @@ public class NMS_v1_19_R3 implements NMSAdapter {
                 entity.setBlock(blockMaterial.createBlockData());
                 entity.setBillboard(org.bukkit.entity.Display.Billboard.FIXED);
                 entity.setGlowing(true);
+                // Scale to desired preview size
+                try {
+                    Transformation t = entity.getTransformation();
+                    entity.setTransformation(new Transformation(
+                        t.getTranslation(),
+                        t.getLeftRotation(),
+                        new org.joml.Vector3f(scaleX, scaleY, scaleZ),
+                        t.getRightRotation()
+                    ));
+                } catch (Throwable ignored) {
+                    // If Transformation API isn't available for some reason, skip scaling
+                }
             });
             int displayId = nextDisplayId++;
+            displayEntities.put(displayId, display);
             return displayId;
         } catch (Exception e) { return -1; }
     }

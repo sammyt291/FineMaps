@@ -371,7 +371,7 @@ public class BukkitNMSAdapter implements NMSAdapter {
 
     @Override
     @SuppressWarnings("unchecked")
-    public int spawnPreviewBlockDisplay(Location location, boolean valid) {
+    public int spawnPreviewBlockDisplay(Location location, boolean valid, float scaleX, float scaleY, float scaleZ) {
         if (blockDisplayClass == null) {
             return -1;
         }
@@ -381,7 +381,7 @@ public class BukkitNMSAdapter implements NMSAdapter {
             if (world == null) return -1;
             
             // Spawn BlockDisplay
-            Entity display = spawnBlockDisplayReflection(world, location, valid);
+            Entity display = spawnBlockDisplayReflection(world, location, valid, scaleX, scaleY, scaleZ);
             if (display != null) {
                 int displayId = nextPreviewDisplayId++;
                 previewDisplayEntities.put(displayId, display);
@@ -395,7 +395,7 @@ public class BukkitNMSAdapter implements NMSAdapter {
     }
 
     @SuppressWarnings("unchecked")
-    private Entity spawnBlockDisplayReflection(World world, Location location, boolean valid) {
+    private Entity spawnBlockDisplayReflection(World world, Location location, boolean valid, float scaleX, float scaleY, float scaleZ) {
         try {
             // Spawn the BlockDisplay entity
             Method simpleSpawn = World.class.getMethod("spawn", Location.class, Class.class);
@@ -453,7 +453,7 @@ public class BukkitNMSAdapter implements NMSAdapter {
                 
                 // Create a small scale transformation (0.02 blocks = thin outline)
                 Object scale = vector3fClass.getConstructor(float.class, float.class, float.class)
-                    .newInstance(1.0f, 1.0f, 0.02f);
+                    .newInstance(scaleX, scaleY, scaleZ);
                 Object translation = vector3fClass.getConstructor(float.class, float.class, float.class)
                     .newInstance(0.0f, 0.0f, 0.0f);
                 Object leftRotation = quaternionfClass.getConstructor().newInstance();

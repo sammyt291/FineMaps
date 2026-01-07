@@ -301,7 +301,7 @@ public class MultiBlockMapHandler {
         
         // Show preview using block displays (modern) or particles (legacy)
         if (useBlockDisplays) {
-            showBlockDisplayPreview(player, anchorLoc, canPlace);
+            showBlockDisplayPreview(player, placement, hitFace, width, height, canPlace);
         } else {
             showOutlineParticles(player, previewLocations, hitFace, canPlace);
         }
@@ -340,6 +340,10 @@ public class MultiBlockMapHandler {
                 : BlockFace.NORTH;
             BlockFace downDir = playerFacing.getOppositeFace(); // bottom of image toward player
             BlockFace rightDir = getRightOfPlayerFacing(playerFacing);
+            // Ceiling placement is mirrored (viewer is underneath), so flip horizontal axis.
+            if (facing == BlockFace.DOWN) {
+                rightDir = rightDir.getOppositeFace();
+            }
 
             Location startLoc = calculateStartLocationHorizontal(anchorLoc, rightDir, downDir, width, height);
             return new PlacementGeometry(startLoc, rightDir, downDir, false);
@@ -358,14 +362,72 @@ public class MultiBlockMapHandler {
      * @param anchorLocation The anchor location the player targeted
      * @param valid Whether placement is valid
      */
-    private void showBlockDisplayPreview(Player player, Location anchorLocation, boolean valid) {
+    private void showBlockDisplayPreview(Player player, PlacementGeometry placement, BlockFace facing, int width, int height, boolean valid) {
         // Clear existing display entity (keep state so we can avoid respawns)
         clearPreviewDisplayOnly(player);
 
-        int displayId = mapManager.getNmsAdapter().spawnPreviewBlockDisplay(anchorLocation, valid);
+        // Spawn a single scaled block display that covers the whole multi-block area.
+        Location center = placement.startLocation.clone().add(0.5, 0.5, 0.5);
+        double halfW = (width - 1) / 2.0;
+        double halfH = (height - 1) / 2.0;
+
+        center.add(placement.right.getModX() * halfW, 0, placement.right.getModZ() * halfW);
+        if (placement.isWall) {
+            center.add(0, -halfH, 0);
+        } else if (placement.down != null) {
+            center.add(placement.down.getModX() * halfH, 0, placement.down.getModZ() * halfH);
+        }
+
+        final float thickness = 0.02f;
+        float scaleX;
+        float scaleY;
+        float scaleZ;
+        if (placement.isWall) {
+            scaleY = height;
+            if (facing == BlockFace.EAST || facing == BlockFace.WEST) {
+                // Wall normal is X; map spans Z and Y
+                scaleX = thickness;
+                scaleZ = width;
+            } else {
+                // Wall normal is Z; map spans X and Y
+                scaleX = width;
+                scaleZ = thickness;
+            }
+        } else {
+            // Floor/ceiling: normal is Y; map spans X/Z depending on right/down
+            scaleY = thickness;
+            scaleX = (float) (Math.abs(placement.right.getModX()) * width + Math.abs(placement.down.getModX()) * height);
+            scaleZ = (float) (Math.abs(placement.right.getModZ()) * width + Math.abs(placement.down.getModZ()) * height);
+        }
+
+        int displayId = mapManager.getNmsAdapter().spawnPreviewBlockDisplay(center, valid, scaleX, scaleY, scaleZ);
         if (displayId != -1) {
             playerPreviewDisplay.put(player.getUniqueId(), displayId);
         }
+    }
+
+    /**
+     * Computes the rotation needed for item frames placed on the floor/ceiling so that
+     * the image "top" points toward the desired direction.
+     *
+     * Assumes the base (Rotation.NONE) has the map "top" pointing NORTH.
+     */
+    private Rotation rotationForFloorCeiling(BlockFace desiredUp, boolean ceiling) {
+        Rotation rot;
+        switch (desiredUp) {
+            case NORTH: rot = Rotation.NONE; break;
+            case EAST: rot = Rotation.CLOCKWISE; break;
+            case SOUTH: rot = Rotation.FLIPPED; break;
+            case WEST: rot = Rotation.COUNTER_CLOCKWISE; break;
+            default: rot = Rotation.NONE; break;
+        }
+
+        // When viewed from below (ceiling), rotation direction appears inverted.
+        if (ceiling) {
+            if (rot == Rotation.CLOCKWISE) return Rotation.COUNTER_CLOCKWISE;
+            if (rot == Rotation.COUNTER_CLOCKWISE) return Rotation.CLOCKWISE;
+        }
+        return rot;
     }
     
     /**
@@ -864,6 +926,15 @@ public class MultiBlockMapHandler {
             .collect(java.util.stream.Collectors.toList());
         
         // Place all item frames
+        Rotation floorCeilingRotation = null;
+        if (facing == BlockFace.UP || facing == BlockFace.DOWN) {
+            BlockFace playerFacing = (player != null)
+                ? getHorizontalFacing(player.getLocation().getYaw())
+                : BlockFace.NORTH;
+            // Keep the top of the image facing away from the player.
+            floorCeilingRotation = rotationForFloorCeiling(playerFacing, facing == BlockFace.DOWN);
+        }
+
         for (int y = 0; y < multiMap.getHeight(); y++) {
             for (int x = 0; x < multiMap.getWidth(); x++) {
                 StoredMap map = multiMap.getMapAt(x, y);
@@ -874,6 +945,12 @@ public class MultiBlockMapHandler {
                 // Spawn item frame
                 ItemFrame frame = world.spawn(loc, ItemFrame.class);
                 frame.setFacingDirection(facing);
+                if (floorCeilingRotation != null) {
+                    try {
+                        frame.setRotation(floorCeilingRotation);
+                    } catch (Throwable ignored) {
+                    }
+                }
                 
                 // Try to set fixed (prevents rotation) - may not exist on older versions
                 try {

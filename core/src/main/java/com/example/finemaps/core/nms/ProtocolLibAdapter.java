@@ -261,7 +261,7 @@ public class ProtocolLibAdapter implements NMSAdapter {
     }
 
     @Override
-    public int spawnPreviewBlockDisplay(Location location, boolean valid) {
+    public int spawnPreviewBlockDisplay(Location location, boolean valid, float scaleX, float scaleY, float scaleZ) {
         // ProtocolLib adapter delegates to the spawnMapDisplay approach
         // This would require packet-based entity spawning which is complex
         // For now, return -1 to fall back to particles
