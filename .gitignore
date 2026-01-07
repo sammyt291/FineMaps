@@ -1,8 +1,6 @@
 # Gradle
 .gradle/
 build/
-!gradle/wrapper/gradle-wrapper.jar
-!gradle/wrapper/gradle-wrapper.properties
 gradle-app.setting
 *.gradle.kts.bak
 
@@ -36,6 +34,10 @@ bin/
 *.war
 *.ear
 *.nar
+
+# Gradle wrapper (must be after *.jar)
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
 
 # Allow released jars in root
 !/MapDB*.jar
