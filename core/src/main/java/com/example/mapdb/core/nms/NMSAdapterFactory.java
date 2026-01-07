@@ -28,8 +28,67 @@ public final class NMSAdapterFactory {
             logger.info("Folia detected - using Folia-compatible adapter");
         }
 
-        // Use ProtocolLib-based adapter for broad compatibility
-        return new ProtocolLibAdapter(logger, version, isFolia);
+        // Check if ProtocolLib is available
+        if (isProtocolLibAvailable()) {
+            logger.info("ProtocolLib found - using ProtocolLib adapter for full functionality");
+            return new ProtocolLibAdapter(logger, version, isFolia);
+        }
+        
+        // Fall back to native NMS adapter (basic mode)
+        logger.info("ProtocolLib not found - using native NMS adapter (basic mode)");
+        return createNativeAdapter(logger, version);
+    }
+    
+    /**
+     * Checks if ProtocolLib is available.
+     *
+     * @return true if ProtocolLib is loaded
+     */
+    public static boolean isProtocolLibAvailable() {
+        try {
+            Class.forName("com.comphenix.protocol.ProtocolLibrary");
+            return org.bukkit.Bukkit.getPluginManager().getPlugin("ProtocolLib") != null;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
+    
+    /**
+     * Creates a native NMS adapter for the current version.
+     *
+     * @param logger Logger instance
+     * @param version Server version
+     * @return Native NMS adapter
+     */
+    private static NMSAdapter createNativeAdapter(Logger logger, String version) {
+        int major = getMajorVersion();
+        
+        try {
+            String adapterClass;
+            if (major >= 21) {
+                adapterClass = "com.example.mapdb.nms.v1_21_R1.NMS_v1_21_R1";
+            } else if (major >= 20) {
+                adapterClass = "com.example.mapdb.nms.v1_20_R3.NMS_v1_20_R3";
+            } else if (major >= 19) {
+                adapterClass = "com.example.mapdb.nms.v1_19_R3.NMS_v1_19_R3";
+            } else if (major >= 18) {
+                adapterClass = "com.example.mapdb.nms.v1_18_R2.NMS_v1_18_R2";
+            } else if (major >= 17) {
+                adapterClass = "com.example.mapdb.nms.v1_17_R1.NMS_v1_17_R1";
+            } else if (major >= 16) {
+                adapterClass = "com.example.mapdb.nms.v1_16_R3.NMS_v1_16_R3";
+            } else if (major >= 13) {
+                adapterClass = "com.example.mapdb.nms.v1_13_R2.NMS_v1_13_R2";
+            } else {
+                adapterClass = "com.example.mapdb.nms.v1_12_R1.NMS_v1_12_R1";
+            }
+            
+            Class<?> clazz = Class.forName(adapterClass);
+            return (NMSAdapter) clazz.getConstructor(Logger.class).newInstance(logger);
+        } catch (Exception e) {
+            logger.warning("Failed to load native NMS adapter, using fallback: " + e.getMessage());
+            return new FallbackNMSAdapter(logger, version);
+        }
     }
 
     /**

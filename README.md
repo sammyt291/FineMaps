@@ -32,14 +32,40 @@ A Minecraft server plugin that stores map pixel and palette data in a database (
 
 - Java 8+ (Java 17+ recommended for 1.18+, Java 21 for 1.21+)
 - Spigot, Paper, or Folia server
-- ProtocolLib (required)
-- RedLib (optional, for enhanced config management)
+- ProtocolLib (optional - see below)
+
+### ProtocolLib Support
+
+ProtocolLib is **optional** but enables the virtual ID system for unlimited maps. Without ProtocolLib, the plugin operates in **basic mode** with standard Bukkit map IDs (limited to ~32,000 maps).
+
+| Feature | With ProtocolLib | Without ProtocolLib |
+|---------|------------------|---------------------|
+| Virtual ID System | ✅ Unlimited maps | ❌ Limited to ~32,000 |
+| Map Packet Interception | ✅ Full control | ❌ Not available |
+| Database Storage | ✅ Full | ✅ Full |
+| Multi-Block Maps | ✅ Full | ✅ Full |
+| Image Import | ✅ Full | ✅ Full |
+
+**Versions supported without ProtocolLib:**
+
+| Minecraft | Status |
+|-----------|--------|
+| 1.21.x | ✅ Basic mode |
+| 1.20.x | ✅ Basic mode |
+| 1.19.x | ✅ Basic mode |
+| 1.18.x | ✅ Basic mode |
+| 1.17.x | ✅ Basic mode |
+| 1.16.x | ✅ Basic mode |
+| 1.13-1.15 | ✅ Basic mode |
+| 1.12.2 | ✅ Basic mode |
+
+All versions from 1.12.2 to 1.21.x work in basic mode without ProtocolLib using native NMS adapters.
 
 ## Installation
 
 1. Download the latest release from the releases page
 2. Place `MapDB.jar` in your server's `plugins` folder
-3. Install ProtocolLib if not already installed
+3. (Optional) Install ProtocolLib for unlimited map support via virtual IDs
 4. Restart your server
 5. Configure `plugins/MapDB/config.yml` as needed
 
