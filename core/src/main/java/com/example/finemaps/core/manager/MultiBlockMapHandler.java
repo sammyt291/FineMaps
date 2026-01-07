@@ -423,29 +423,50 @@ public class MultiBlockMapHandler {
      * Computes the rotation needed for item frames placed on the floor/ceiling so that
      * the image "top" points toward the desired direction.
      *
-     * Assumes the base (Rotation.NONE) has the map "top" pointing SOUTH.
+     * Notes:
+     * - Bukkit exposes an 8-step Rotation enum, but maps visually rotate in 90° steps.
+     * - We treat the effective rotation as (rotation.ordinal() % 4).
+     * - For floor-mounted frames (facing UP), Rotation.NONE corresponds to map-top = NORTH.
+     * - For ceiling-mounted frames (facing DOWN), Rotation.NONE corresponds to map-top = SOUTH
+     *   when viewed from below.
      *
-     * Note: For floor/ceiling item frames, Bukkit's rotation "0°" aligns with Minecraft's
-     * yaw "0°" baseline (SOUTH). From that baseline:
-     * - CLOCKWISE is +90° (SOUTH -> WEST -> NORTH -> EAST)
-     * - COUNTER_CLOCKWISE is -90°
+     * We intentionally choose the first 4 enum constants (NONE, CLOCKWISE_45, CLOCKWISE, CLOCKWISE_135)
+     * to represent quarter-turns 0..3 for maps.
      */
     private Rotation rotationForFloorCeiling(BlockFace desiredUp, boolean ceiling) {
-        Rotation rot;
-        switch (desiredUp) {
-            case SOUTH: rot = Rotation.NONE; break;
-            case WEST: rot = Rotation.COUNTER_CLOCKWISE; break;
-            case NORTH: rot = Rotation.FLIPPED; break;
-            case EAST: rot = Rotation.CLOCKWISE; break;
-            default: rot = Rotation.NONE; break;
+        // Normalize
+        if (desiredUp == null) desiredUp = BlockFace.NORTH;
+
+        int quarterTurns;
+        if (!ceiling) {
+            // FLOOR (facing UP): NONE => top=NORTH, then +1 rotates clockwise when viewed from above
+            // N -> E -> S -> W
+            switch (desiredUp) {
+                case NORTH: quarterTurns = 0; break;
+                case EAST: quarterTurns = 1; break;
+                case SOUTH: quarterTurns = 2; break;
+                case WEST: quarterTurns = 3; break;
+                default: quarterTurns = 0; break;
+            }
+        } else {
+            // CEILING (facing DOWN): NONE => top=SOUTH (as seen from below),
+            // then +1 rotates clockwise from below: S -> W -> N -> E
+            switch (desiredUp) {
+                case SOUTH: quarterTurns = 0; break;
+                case WEST: quarterTurns = 1; break;
+                case NORTH: quarterTurns = 2; break;
+                case EAST: quarterTurns = 3; break;
+                default: quarterTurns = 0; break;
+            }
         }
 
-        // When viewed from below (ceiling), rotation direction appears inverted.
-        if (ceiling) {
-            if (rot == Rotation.CLOCKWISE) return Rotation.COUNTER_CLOCKWISE;
-            if (rot == Rotation.COUNTER_CLOCKWISE) return Rotation.CLOCKWISE;
+        switch (quarterTurns & 3) {
+            case 0: return Rotation.NONE;
+            case 1: return Rotation.CLOCKWISE_45;   // maps: visually 90°
+            case 2: return Rotation.CLOCKWISE;      // maps: visually 180°
+            case 3: return Rotation.CLOCKWISE_135;  // maps: visually 270°
+            default: return Rotation.NONE;
         }
-        return rot;
     }
     
     /**
