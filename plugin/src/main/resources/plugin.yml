@@ -17,6 +17,10 @@ commands:
     usage: /finemaps <subcommand>
     permission: finemaps.use
     aliases: [fm, maps]
+  debug:
+    description: FineMaps debug/load-testing commands
+    usage: /debug <seed|placemaps> ...
+    permission: finemaps.admin
 
 permissions:
   finemaps.use:
