@@ -1,0 +1,62 @@
+name: MapDB
+version: ${project.version}
+main: com.example.mapdb.plugin.MapDBPlugin
+api-version: "1.13"
+description: Database-backed map storage system with unlimited map IDs
+author: MapDB Team
+website: https://github.com/example/mapdb
+
+depend:
+  - ProtocolLib
+
+softdepend:
+  - RedLib
+
+folia-supported: true
+
+commands:
+  mapdb:
+    description: MapDB management commands
+    usage: /mapdb <subcommand>
+    permission: mapdb.use
+    aliases: [mdb, maps]
+
+permissions:
+  mapdb.use:
+    description: Allows use of basic MapDB commands
+    default: true
+  mapdb.create:
+    description: Allows creating blank maps
+    default: op
+  mapdb.url:
+    description: Allows creating maps from URLs
+    default: op
+  mapdb.get:
+    description: Allows getting map items by ID
+    default: op
+  mapdb.delete:
+    description: Allows deleting maps
+    default: op
+  mapdb.list:
+    description: Allows listing maps
+    default: op
+  mapdb.info:
+    description: Allows viewing map info
+    default: op
+  mapdb.admin:
+    description: Full admin access to MapDB
+    default: op
+    children:
+      mapdb.use: true
+      mapdb.create: true
+      mapdb.url: true
+      mapdb.get: true
+      mapdb.delete: true
+      mapdb.list: true
+      mapdb.info: true
+  mapdb.unlimited:
+    description: No limit on map creation
+    default: op
+  mapdb.limit.*:
+    description: Wildcard for limit permissions
+    default: false
