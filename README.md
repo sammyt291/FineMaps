@@ -1,4 +1,4 @@
-# MapDB - Database-Backed Map Storage System
+# FineMaps - Database-Backed Map Storage System
 
 A Minecraft server plugin that stores map pixel and palette data in a database (SQLite or MySQL) with RLE compression, supporting 64-bit map IDs to bypass the vanilla ~32,000 map limit.
 
@@ -52,10 +52,10 @@ ProtocolLib is **optional** but enables the virtual ID system for efficient map 
 ## Installation
 
 1. Download the latest release from the releases page
-2. Place `MapDB.jar` in your server's `plugins` folder
+2. Place `FineMaps.jar` in your server's `plugins` folder
 3. (Optional) Install ProtocolLib for unlimited map support via virtual IDs
 4. Restart your server
-5. Configure `plugins/MapDB/config.yml` as needed
+5. Configure `plugins/FineMaps/config.yml` as needed
 
 ## Configuration
 
@@ -68,7 +68,7 @@ database:
   mysql:
     host: localhost
     port: 3306
-    database: mapdb
+    database: finemaps
     username: root
     password: ""
     use-ssl: false
@@ -105,37 +105,37 @@ images:
 
 | Command | Description | Permission |
 |---------|-------------|------------|
-| `/mapdb url <url> [width] [height] [dither]` | Create map from URL | `mapdb.url` |
-| `/mapdb get <mapId>` | Get a map item by ID | `mapdb.get` |
-| `/mapdb delete <mapId>` | Delete a map | `mapdb.delete` |
-| `/mapdb list [pluginId]` | List stored maps | `mapdb.list` |
-| `/mapdb info <mapId>` | Show map information | `mapdb.info` |
-| `/mapdb stats` | Show plugin statistics | `mapdb.admin` |
-| `/mapdb reload` | Reload configuration | `mapdb.admin` |
+| `/finemaps url <url> [width] [height] [dither]` | Create map from URL | `finemaps.url` |
+| `/finemaps get <mapId>` | Get a map item by ID | `finemaps.get` |
+| `/finemaps delete <mapId>` | Delete a map | `finemaps.delete` |
+| `/finemaps list [pluginId]` | List stored maps | `finemaps.list` |
+| `/finemaps info <mapId>` | Show map information | `finemaps.info` |
+| `/finemaps stats` | Show plugin statistics | `finemaps.admin` |
+| `/finemaps reload` | Reload configuration | `finemaps.admin` |
 
 ## Permissions
 
 | Permission | Description | Default |
 |------------|-------------|---------|
-| `mapdb.use` | Basic command access | true |
-| `mapdb.create` | Create blank maps | op |
-| `mapdb.url` | Create maps from URLs | op |
-| `mapdb.get` | Get map items | op |
-| `mapdb.delete` | Delete maps | op |
-| `mapdb.list` | List maps | op |
-| `mapdb.info` | View map info | op |
-| `mapdb.admin` | Full admin access | op |
-| `mapdb.unlimited` | No map creation limit | op |
-| `mapdb.limit.<group>` | Use group-specific limit | false |
+| `finemaps.use` | Basic command access | true |
+| `finemaps.create` | Create blank maps | op |
+| `finemaps.url` | Create maps from URLs | op |
+| `finemaps.get` | Get map items | op |
+| `finemaps.delete` | Delete maps | op |
+| `finemaps.list` | List maps | op |
+| `finemaps.info` | View map info | op |
+| `finemaps.admin` | Full admin access | op |
+| `finemaps.unlimited` | No map creation limit | op |
+| `finemaps.limit.<group>` | Use group-specific limit | false |
 
 ## API Usage
 
 ### Getting the API
 
 ```java
-import com.example.mapdb.api.MapDBAPI;
+import com.example.finemaps.api.FineMapsAPI;
 
-MapDBAPI api = MapDBAPI.getInstance();
+FineMapsAPI api = FineMapsAPI.getInstance();
 if (api != null) {
     // API is available
 }
@@ -208,10 +208,10 @@ public void onMapLoad(MapLoadEvent event) {
 
 The plugin creates the following tables:
 
-- `mapdb_maps` - Map metadata (ID, plugin, creator, timestamps, etc.)
-- `mapdb_data` - Compressed pixel data
-- `mapdb_groups` - Multi-block map group information
-- `mapdb_ids` - ID sequence counters
+- `finemaps_maps` - Map metadata (ID, plugin, creator, timestamps, etc.)
+- `finemaps_data` - Compressed pixel data
+- `finemaps_groups` - Multi-block map group information
+- `finemaps_ids` - ID sequence counters
 
 ### Compression
 
@@ -239,12 +239,12 @@ Large images can be split into multiple 128x128 maps:
 ## Building from Source
 
 ```bash
-git clone https://github.com/example/mapdb.git
-cd mapdb
+git clone https://github.com/example/finemaps.git
+cd finemaps
 ./gradlew build
 ```
 
-The built JAR will be in `plugin/build/libs/MapDB-1.0.0.jar`.
+The built JAR will be in `plugin/build/libs/FineMaps-1.0.0.jar`.
 
 ### Gradle Tasks
 

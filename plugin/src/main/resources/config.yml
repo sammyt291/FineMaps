@@ -1,4 +1,4 @@
-# MapDB Configuration
+# FineMaps Configuration
 # Database-backed map storage system
 
 # Database configuration
@@ -15,7 +15,7 @@ database:
   mysql:
     host: localhost
     port: 3306
-    database: mapdb
+    database: finemaps
     username: root
     password: ""
     use-ssl: false
@@ -26,7 +26,7 @@ permissions:
   default-limit: 100
   
   # Map limits per permission group
-  # Players with mapdb.limit.<group> permission get that limit
+  # Players with finemaps.limit.<group> permission get that limit
   group-limits:
     vip: 500
     premium: 1000

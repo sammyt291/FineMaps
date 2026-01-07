@@ -3,7 +3,7 @@ plugins {
     `maven-publish`
 }
 
-group = "com.example.mapdb"
+group = "com.example.finemaps"
 version = "1.0.0"
 
 subprojects {

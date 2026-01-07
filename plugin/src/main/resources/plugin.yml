@@ -1,10 +1,10 @@
-name: MapDB
+name: FineMaps
 version: ${version}
-main: com.example.mapdb.plugin.MapDBPlugin
+main: com.example.finemaps.plugin.FineMapsPlugin
 api-version: "1.13"
 description: Database-backed map storage system with unlimited map IDs
-author: MapDB Team
-website: https://github.com/example/mapdb
+author: FineMaps Team
+website: https://github.com/example/finemaps
 
 softdepend:
   - ProtocolLib
@@ -12,48 +12,48 @@ softdepend:
 folia-supported: true
 
 commands:
-  mapdb:
-    description: MapDB management commands
-    usage: /mapdb <subcommand>
-    permission: mapdb.use
-    aliases: [mdb, maps]
+  finemaps:
+    description: FineMaps management commands
+    usage: /finemaps <subcommand>
+    permission: finemaps.use
+    aliases: [fm, maps]
 
 permissions:
-  mapdb.use:
-    description: Allows use of basic MapDB commands
+  finemaps.use:
+    description: Allows use of basic FineMaps commands
     default: true
-  mapdb.create:
+  finemaps.create:
     description: Allows creating blank maps
     default: op
-  mapdb.url:
+  finemaps.url:
     description: Allows creating maps from URLs
     default: op
-  mapdb.get:
+  finemaps.get:
     description: Allows getting map items by ID
     default: op
-  mapdb.delete:
+  finemaps.delete:
     description: Allows deleting maps
     default: op
-  mapdb.list:
+  finemaps.list:
     description: Allows listing maps
     default: op
-  mapdb.info:
+  finemaps.info:
     description: Allows viewing map info
     default: op
-  mapdb.admin:
-    description: Full admin access to MapDB
+  finemaps.admin:
+    description: Full admin access to FineMaps
     default: op
     children:
-      mapdb.use: true
-      mapdb.create: true
-      mapdb.url: true
-      mapdb.get: true
-      mapdb.delete: true
-      mapdb.list: true
-      mapdb.info: true
-  mapdb.unlimited:
+      finemaps.use: true
+      finemaps.create: true
+      finemaps.url: true
+      finemaps.get: true
+      finemaps.delete: true
+      finemaps.list: true
+      finemaps.info: true
+  finemaps.unlimited:
     description: No limit on map creation
     default: op
-  mapdb.limit.*:
+  finemaps.limit.*:
     description: Wildcard for limit permissions
     default: false

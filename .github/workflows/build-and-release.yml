@@ -118,13 +118,13 @@ jobs:
       
       - name: Delete old jar files from root
         run: |
-          rm -f MapDB*.jar
+          rm -f FineMaps*.jar
           echo "Cleaned old jar files from root"
       
       - name: Copy jar to root
         run: |
-          cp plugin/build/libs/MapDB-${{ steps.version.outputs.VERSION }}.jar ./MapDB-${{ steps.version.outputs.VERSION }}.jar
-          echo "Copied MapDB-${{ steps.version.outputs.VERSION }}.jar to root"
+          cp plugin/build/libs/FineMaps-${{ steps.version.outputs.VERSION }}.jar ./FineMaps-${{ steps.version.outputs.VERSION }}.jar
+          echo "Copied FineMaps-${{ steps.version.outputs.VERSION }}.jar to root"
       
       - name: Create tag
         run: |
@@ -158,7 +158,7 @@ jobs:
           echo "" >> changelog.md
           echo "### Installation" >> changelog.md
           echo "" >> changelog.md
-          echo "1. Download \`MapDB-${{ steps.version.outputs.VERSION }}.jar\`" >> changelog.md
+          echo "1. Download \`FineMaps-${{ steps.version.outputs.VERSION }}.jar\`" >> changelog.md
           echo "2. Place it in your server's \`plugins\` folder" >> changelog.md
           echo "3. Restart your server" >> changelog.md
           echo "" >> changelog.md
@@ -174,10 +174,10 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ steps.version.outputs.VERSION }}
-          name: MapDB v${{ steps.version.outputs.VERSION }}
+          name: FineMaps v${{ steps.version.outputs.VERSION }}
           body_path: changelog.md
           files: |
-            MapDB-${{ steps.version.outputs.VERSION }}.jar
+            FineMaps-${{ steps.version.outputs.VERSION }}.jar
           draft: false
           prerelease: false
         env:
@@ -186,6 +186,6 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MapDB-${{ steps.version.outputs.VERSION }}
-          path: MapDB-${{ steps.version.outputs.VERSION }}.jar
+          name: FineMaps-${{ steps.version.outputs.VERSION }}
+          path: FineMaps-${{ steps.version.outputs.VERSION }}.jar
           retention-days: 30

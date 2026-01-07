@@ -41,10 +41,10 @@ jobs:
       - name: Verify jar was created
         run: |
           ls -la plugin/build/libs/
-          JAR_COUNT=$(ls plugin/build/libs/MapDB-*.jar 2>/dev/null | wc -l)
+          JAR_COUNT=$(ls plugin/build/libs/FineMaps-*.jar 2>/dev/null | wc -l)
           if [ "$JAR_COUNT" -gt 0 ]; then
             echo "✅ Shadow jar created successfully"
-            ls -la plugin/build/libs/MapDB-*.jar
+            ls -la plugin/build/libs/FineMaps-*.jar
           else
             echo "❌ Shadow jar not found"
             exit 1
@@ -53,6 +53,6 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MapDB-snapshot
-          path: plugin/build/libs/MapDB-*.jar
+          name: FineMaps-snapshot
+          path: plugin/build/libs/FineMaps-*.jar
           retention-days: 7
