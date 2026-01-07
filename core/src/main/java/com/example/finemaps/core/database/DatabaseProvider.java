@@ -104,6 +104,16 @@ public interface DatabaseProvider {
     CompletableFuture<List<StoredMap>> getMapsByPlugin(String pluginId);
 
     /**
+     * Gets all map IDs belonging to a plugin, ordered by ID ascending.
+     * Intended for debug/load-test routines that need to iterate maps efficiently
+     * without loading full map rows.
+     *
+     * @param pluginId The plugin ID
+     * @return CompletableFuture containing list of map IDs
+     */
+    CompletableFuture<List<Long>> getMapIdsByPlugin(String pluginId);
+
+    /**
      * Gets all maps created by a player.
      *
      * @param creatorUUID The creator's UUID
