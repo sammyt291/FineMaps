@@ -1,6 +1,6 @@
 package com.example.mapdb.nms.v1_16_R3;
 
-import com.example.mapdb.core.nms.NMSAdapter;
+import com.example.mapdb.api.nms.NMSAdapter;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;

@@ -8,7 +8,7 @@ import com.example.mapdb.core.database.MySQLDatabaseProvider;
 import com.example.mapdb.core.database.SQLiteDatabaseProvider;
 import com.example.mapdb.core.manager.MapManager;
 import com.example.mapdb.core.manager.MultiBlockMapHandler;
-import com.example.mapdb.core.nms.NMSAdapter;
+import com.example.mapdb.api.nms.NMSAdapter;
 import com.example.mapdb.core.nms.NMSAdapterFactory;
 import com.example.mapdb.plugin.command.MapDBCommand;
 import com.example.mapdb.plugin.listener.ChunkListener;

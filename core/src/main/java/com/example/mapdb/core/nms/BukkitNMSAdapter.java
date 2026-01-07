@@ -1,5 +1,6 @@
 package com.example.mapdb.core.nms;
 
+import com.example.mapdb.api.nms.NMSAdapter;
 import org.bukkit.Bukkit;
 import org.bukkit.Color;
 import org.bukkit.Location;
