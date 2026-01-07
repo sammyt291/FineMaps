@@ -6,6 +6,7 @@ import com.example.finemaps.plugin.FineMapsPlugin;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
@@ -255,6 +256,29 @@ public class ItemFrameListener implements Listener {
             itemGrid = item.getItemMeta().getPersistentDataContainer().get(gridPositionKey, PersistentDataType.STRING);
         }
 
+        int bukkitMapId = -1;
+        try {
+            if (itemMapId > 0) {
+                bukkitMapId = plugin.getMapManager().getMapViewManager().getBukkitMapId(itemMapId);
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // Rotation diagnostics:
+        // Bukkit exposes ItemFrame rotation, which is effectively the rotation of the displayed item.
+        // For maps, visuals are in 90° steps even though Rotation has 8 values.
+        org.bukkit.Rotation rot = frame.getRotation();
+        int rotOrdinal = (rot != null) ? rot.ordinal() : -1;
+        int quarterTurns = rotOrdinal >= 0 ? (rotOrdinal % 4) : -1;
+
+        BlockFace facing = frame.getFacing();
+        BlockFace wallRight = rightFromViewer(facing);
+        BlockFace wallTop = topDirectionOnWall(wallRight, quarterTurns);
+
+        BlockFace floorTop = topDirectionOnFloor(quarterTurns);
+        BlockFace ceilingTopCwFromBelow = topDirectionOnCeilingCwFromBelow(quarterTurns);
+        BlockFace ceilingTopCwFromAbove = topDirectionOnCeilingCwFromAbove(quarterTurns);
+
         player.sendMessage(ChatColor.GOLD + "=== FineMaps Frame Debug ===");
         player.sendMessage(ChatColor.YELLOW + "World: " + ChatColor.WHITE + (loc.getWorld() != null ? loc.getWorld().getName() : "<null>"));
         player.sendMessage(ChatColor.YELLOW + "Block: " + ChatColor.WHITE + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ());
@@ -266,6 +290,7 @@ public class ItemFrameListener implements Listener {
             ChatColor.GRAY + " | storedMap=" + ChatColor.WHITE + (item != null && mapManager.isStoredMap(item)));
 
         player.sendMessage(ChatColor.YELLOW + "Item mapId: " + ChatColor.WHITE + itemMapId +
+            ChatColor.GRAY + " | bukkitMapId: " + ChatColor.WHITE + bukkitMapId +
             ChatColor.GRAY + " | item groupId: " + ChatColor.WHITE + itemGroupId +
             ChatColor.GRAY + " | item grid: " + ChatColor.WHITE + (itemGrid != null ? itemGrid : "<none>"));
 
@@ -273,5 +298,90 @@ public class ItemFrameListener implements Listener {
             ChatColor.GRAY + " | entity grid: " + ChatColor.WHITE + (entityGrid != null ? entityGrid : "<none>") +
             ChatColor.GRAY + " | placed: " + ChatColor.WHITE + ((placed != null && placed != 0) ? "1" : "0") +
             ChatColor.GRAY + " | singleMapId: " + ChatColor.WHITE + (singleMapId != null ? singleMapId : -1));
+
+        player.sendMessage(ChatColor.YELLOW + "Rotation raw: " + ChatColor.WHITE + (rot != null ? rot.name() : "<null>") +
+            ChatColor.GRAY + " | ordinal=" + ChatColor.WHITE + rotOrdinal +
+            ChatColor.GRAY + " | quarterTurns(ordinal%4)=" + ChatColor.WHITE + quarterTurns);
+
+        if (facing == BlockFace.UP) {
+            player.sendMessage(ChatColor.YELLOW + "Map top dir (FLOOR, NONE baseline≈EAST): " + ChatColor.WHITE + floorTop);
+        } else if (facing == BlockFace.DOWN) {
+            player.sendMessage(ChatColor.YELLOW + "Map top dir (CEILING, NONE baseline≈SOUTH): " + ChatColor.WHITE + "cw-from-below=" + ceilingTopCwFromBelow +
+                ChatColor.GRAY + " | cw-from-above=" + ChatColor.WHITE + ceilingTopCwFromAbove);
+        } else {
+            player.sendMessage(ChatColor.YELLOW + "Map top dir (WALL, NONE baseline=UP): " + ChatColor.WHITE + wallTop +
+                ChatColor.GRAY + " | viewerRight=" + ChatColor.WHITE + wallRight);
+        }
+    }
+
+    /**
+     * Viewer-right direction given the wall-facing of the item frame.
+     * This matches the placement logic used for multi-block ordering.
+     */
+    private BlockFace rightFromViewer(BlockFace facing) {
+        switch (facing) {
+            case NORTH: return BlockFace.WEST;
+            case SOUTH: return BlockFace.EAST;
+            case EAST: return BlockFace.SOUTH;
+            case WEST: return BlockFace.NORTH;
+            default: return BlockFace.EAST;
+        }
+    }
+
+    private BlockFace topDirectionOnWall(BlockFace viewerRight, int quarterTurns) {
+        if (quarterTurns < 0) return null;
+        switch (quarterTurns) {
+            case 0: return BlockFace.UP;
+            case 1: return viewerRight;
+            case 2: return BlockFace.DOWN;
+            case 3: return viewerRight.getOppositeFace();
+            default: return BlockFace.UP;
+        }
+    }
+
+    /**
+     * Floor frames (facing UP): per user observation, NONE makes map-top point EAST.
+     * Each effective quarter turn rotates 90° clockwise around +Y when viewed from above.
+     */
+    private BlockFace topDirectionOnFloor(int quarterTurns) {
+        if (quarterTurns < 0) return null;
+        switch (quarterTurns & 3) {
+            case 0: return BlockFace.EAST;
+            case 1: return BlockFace.SOUTH;
+            case 2: return BlockFace.WEST;
+            case 3: return BlockFace.NORTH;
+            default: return BlockFace.EAST;
+        }
+    }
+
+    /**
+     * Ceiling frames (facing DOWN): per user observation, NONE makes map-top point SOUTH.
+     * "Clockwise" is from the viewer's perspective (typically from below).
+     */
+    private BlockFace topDirectionOnCeilingCwFromBelow(int quarterTurns) {
+        if (quarterTurns < 0) return null;
+        // If the viewer is below, clockwise around -Y is opposite the "from above" direction.
+        switch (quarterTurns & 3) {
+            case 0: return BlockFace.SOUTH;
+            case 1: return BlockFace.WEST;
+            case 2: return BlockFace.NORTH;
+            case 3: return BlockFace.EAST;
+            default: return BlockFace.SOUTH;
+        }
+    }
+
+    /**
+     * Alternate ceiling interpretation (clockwise as if viewed from above).
+     * Included because different clients/versions can feel inverted.
+     */
+    private BlockFace topDirectionOnCeilingCwFromAbove(int quarterTurns) {
+        if (quarterTurns < 0) return null;
+        switch (quarterTurns & 3) {
+            case 0: return BlockFace.SOUTH;
+            case 1: return BlockFace.EAST;
+            case 2: return BlockFace.NORTH;
+            case 3: return BlockFace.WEST;
+            default: return BlockFace.SOUTH;
+        }
     }
 }
