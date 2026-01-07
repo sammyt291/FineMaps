@@ -11,12 +11,14 @@ import com.example.finemaps.core.config.FineMapsConfig;
 import com.example.finemaps.core.database.DatabaseProvider;
 import com.example.finemaps.core.image.ImageProcessor;
 import com.example.finemaps.api.nms.NMSAdapter;
-import com.example.finemaps.core.virtual.VirtualIdManager;
+import com.example.finemaps.core.render.MapViewManager;
 import org.bukkit.Bukkit;
 import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.MapMeta;
+import org.bukkit.map.MapView;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
@@ -39,7 +41,7 @@ public class MapManager implements FineMapsAPI {
     private final FineMapsConfig config;
     private final DatabaseProvider database;
     private final NMSAdapter nmsAdapter;
-    private final VirtualIdManager virtualIdManager;
+    private final MapViewManager mapViewManager;
     private final ImageProcessor imageProcessor;
 
     // Cache of loaded maps
@@ -62,7 +64,7 @@ public class MapManager implements FineMapsAPI {
         this.config = config;
         this.database = database;
         this.nmsAdapter = nmsAdapter;
-        this.virtualIdManager = new VirtualIdManager(config.getMaps().getMaxVirtualIds());
+        this.mapViewManager = new MapViewManager(plugin);
         this.imageProcessor = new ImageProcessor(
             config.getImages().getConnectionTimeout(),
             config.getImages().getReadTimeout(),
@@ -70,54 +72,61 @@ public class MapManager implements FineMapsAPI {
         );
         this.mapIdKey = new NamespacedKey(plugin, "finemaps_id");
         this.groupIdKey = new NamespacedKey(plugin, "finemaps_group");
-
-        // Register packet interceptor
-        nmsAdapter.registerPacketInterceptor(this::handleMapPacket);
     }
 
     /**
-     * Handles intercepted map packets.
+     * Gets or creates a proper Bukkit MapView for the given map ID.
+     * This ensures the map will render correctly in item frames and player hands.
      *
-     * @param player The player
-     * @param mapId The map ID
-     * @return true to cancel the packet
+     * @param dbMapId The database map ID
+     * @return The Bukkit map ID
      */
-    private boolean handleMapPacket(Player player, int mapId) {
-        // Check if this is a virtual ID we manage
-        if (!virtualIdManager.isVirtualId(mapId)) {
-            return false; // Allow vanilla maps through
+    private int getOrCreateBukkitMapId(long dbMapId) {
+        // Check if we already have a Bukkit map for this
+        int existingId = mapViewManager.getBukkitMapId(dbMapId);
+        if (existingId != -1) {
+            return existingId;
         }
         
-        // Get the actual database map ID
-        long dbMapId = virtualIdManager.resolveVirtualId(mapId);
-        if (dbMapId == -1) {
-            return true; // Cancel packets for unresolved IDs
-        }
-        
-        // Send our custom map data instead
-        sendMapToPlayerInternal(player, dbMapId, mapId);
-        return true; // Cancel original packet
-    }
-
-    private void sendMapToPlayerInternal(Player player, long dbMapId, int virtualId) {
-        // Check cache first
+        // Check cache first for pixel data
         MapData cached = mapDataCache.get(dbMapId);
         if (cached != null) {
-            nmsAdapter.sendMapUpdate(player, virtualId, cached.getPixelsUnsafe());
-            return;
+            return mapViewManager.getOrCreateBukkitMapId(dbMapId, cached.getPixelsUnsafe());
         }
         
-        // Load from database
-        database.getMapData(dbMapId).thenAccept(optData -> {
-            optData.ifPresent(data -> {
-                mapDataCache.put(dbMapId, data);
-                
-                // Run on main thread for packet sending
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    nmsAdapter.sendMapUpdate(player, virtualId, data.getPixelsUnsafe());
-                });
-            });
+        // Create with lazy loading - will load pixels when first rendered
+        return mapViewManager.getOrCreateBukkitMapId(dbMapId, () -> {
+            // Try cache again (might have been populated by another call)
+            MapData cachedData = mapDataCache.get(dbMapId);
+            if (cachedData != null) {
+                return cachedData.getPixelsUnsafe();
+            }
+            
+            // Load from database synchronously (called during render)
+            try {
+                Optional<MapData> optData = database.getMapData(dbMapId).join();
+                if (optData.isPresent()) {
+                    mapDataCache.put(dbMapId, optData.get());
+                    return optData.get().getPixelsUnsafe();
+                }
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "Failed to load map data for " + dbMapId, e);
+            }
+            
+            // Return blank map on failure
+            return new byte[MapData.TOTAL_PIXELS];
         });
+    }
+
+    /**
+     * Ensures a map's pixel data is loaded and the MapView is initialized.
+     *
+     * @param dbMapId The database map ID
+     * @param pixels The pixel data to use
+     */
+    private void ensureMapInitialized(long dbMapId, byte[] pixels) {
+        mapDataCache.put(dbMapId, new MapData(dbMapId, pixels));
+        mapViewManager.getOrCreateBukkitMapId(dbMapId, pixels);
     }
 
     @Override
@@ -188,9 +197,9 @@ public class MapManager implements FineMapsAPI {
 
     @Override
     public CompletableFuture<Boolean> deleteMap(long mapId) {
-        // Clear from cache
+        // Clear from cache and release MapView
         mapDataCache.remove(mapId);
-        virtualIdManager.releaseGlobalVirtualId(mapId);
+        mapViewManager.releaseMap(mapId);
         
         return database.deleteMap(mapId);
     }
@@ -201,7 +210,7 @@ public class MapManager implements FineMapsAPI {
         return database.getMapsByGroup(groupId).thenCompose(maps -> {
             for (StoredMap map : maps) {
                 mapDataCache.remove(map.getId());
-                virtualIdManager.releaseGlobalVirtualId(map.getId());
+                mapViewManager.releaseMap(map.getId());
             }
             return database.deleteMultiBlockGroup(groupId);
         });
@@ -211,6 +220,9 @@ public class MapManager implements FineMapsAPI {
     public CompletableFuture<Boolean> updateMapPixels(long mapId, byte[] pixels) {
         // Update cache
         mapDataCache.put(mapId, new MapData(mapId, pixels));
+        
+        // Update the MapView renderer
+        mapViewManager.updateMapPixels(mapId, pixels);
         
         return database.updateMapPixels(mapId, pixels);
     }
@@ -231,10 +243,13 @@ public class MapManager implements FineMapsAPI {
 
     @Override
     public ItemStack createMapItem(long mapId) {
-        int virtualId = virtualIdManager.getOrCreateGlobalVirtualId(mapId);
-        ItemStack item = nmsAdapter.createMapItem(virtualId);
+        // Get or create a proper Bukkit map for this database ID
+        int bukkitMapId = getOrCreateBukkitMapId(mapId);
         
-        // Store our map ID in NBT
+        // Create the map item using NMS adapter
+        ItemStack item = nmsAdapter.createMapItem(bukkitMapId);
+        
+        // Store our database map ID in NBT so we can identify it later
         ItemMeta meta = item.getItemMeta();
         if (meta != null) {
             PersistentDataContainer pdc = meta.getPersistentDataContainer();
@@ -274,36 +289,72 @@ public class MapManager implements FineMapsAPI {
 
     @Override
     public void giveMapToPlayer(Player player, long mapId) {
-        ItemStack item = createMapItem(mapId);
-        player.getInventory().addItem(item);
-        
-        // Load and send map data immediately so it doesn't show "UNKNOWN MAP"
-        sendMapToPlayer(player, mapId);
-        
-        // Also force update the player's inventory to refresh the item display
-        player.updateInventory();
+        // Ensure map data is loaded first
+        getMapData(mapId).thenAccept(optData -> {
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                // Create the map item (this will also initialize the MapView)
+                ItemStack item = createMapItem(mapId);
+                player.getInventory().addItem(item);
+                
+                // Force update the player's inventory to refresh the item display
+                player.updateInventory();
+                
+                // Track that this player has this map
+                playerLoadedMaps.computeIfAbsent(player.getUniqueId(), k -> new HashSet<>()).add(mapId);
+                
+                // Invalidate the map for this player to force re-render
+                mapViewManager.getRenderer(mapId).ifPresent(r -> r.invalidatePlayer(player.getUniqueId()));
+            });
+        });
     }
 
     @Override
     public void giveMultiBlockMapToPlayer(Player player, long groupId) {
-        // Create a single item representing the entire multi-block map
-        ItemStack item = createMultiBlockMapItem(groupId);
-        if (item != null) {
-            player.getInventory().addItem(item);
+        // Pre-load all map data first, then give the item
+        getMultiBlockMap(groupId).thenAccept(optMap -> {
+            if (!optMap.isPresent()) {
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    player.sendMessage(org.bukkit.ChatColor.RED + "Map group not found!");
+                });
+                return;
+            }
             
-            // Pre-load and send all map data to the player so they render correctly
-            getMultiBlockMap(groupId).thenAccept(optMap -> {
-                optMap.ifPresent(multiMap -> {
-                    for (StoredMap map : multiMap.getMaps()) {
-                        sendMapToPlayer(player, map.getId());
+            MultiBlockMap multiMap = optMap.get();
+            
+            // Load all individual maps' pixel data
+            List<CompletableFuture<Void>> loadFutures = new ArrayList<>();
+            for (StoredMap map : multiMap.getMaps()) {
+                CompletableFuture<Void> future = getMapData(map.getId()).thenAccept(data -> {
+                    // This loads the data into cache
+                });
+                loadFutures.add(future);
+            }
+            
+            // Wait for all to load, then give item on main thread
+            CompletableFuture.allOf(loadFutures.toArray(new CompletableFuture[0])).thenRun(() -> {
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    // Create the multi-block map item
+                    ItemStack item = createMultiBlockMapItem(groupId);
+                    if (item != null) {
+                        player.getInventory().addItem(item);
+                        player.updateInventory();
+                        
+                        // Track maps for this player
+                        for (StoredMap map : multiMap.getMaps()) {
+                            playerLoadedMaps.computeIfAbsent(player.getUniqueId(), k -> new HashSet<>()).add(map.getId());
+                            
+                            // Invalidate renderer for this player to force re-render
+                            mapViewManager.getRenderer(map.getId()).ifPresent(r -> r.invalidatePlayer(player.getUniqueId()));
+                        }
                     }
                 });
             });
-        }
+        });
     }
     
     /**
      * Creates a single item representing an entire multi-block map.
+     * Also ensures all component maps are initialized with their MapViews.
      *
      * @param groupId The group ID
      * @return The item, or null if not found
@@ -315,6 +366,17 @@ public class MapManager implements FineMapsAPI {
         }
         
         MultiBlockMap multiMap = optMap.get();
+        
+        // Initialize MapViews for ALL maps in the group (so they render when placed)
+        for (StoredMap map : multiMap.getMaps()) {
+            // Load pixel data and create MapView
+            getMapData(map.getId()).thenAccept(optData -> {
+                optData.ifPresent(data -> {
+                    // This ensures the MapView is created
+                    getOrCreateBukkitMapId(map.getId());
+                });
+            });
+        }
         
         // Use the first map (top-left, 0,0) as the display item
         StoredMap firstMap = multiMap.getMapAt(0, 0);
@@ -410,23 +472,33 @@ public class MapManager implements FineMapsAPI {
 
     @Override
     public void sendMapToPlayer(Player player, long mapId) {
-        int virtualId = virtualIdManager.getOrCreatePlayerVirtualId(player.getUniqueId(), mapId);
-        
         // Track loaded maps for this player
         playerLoadedMaps.computeIfAbsent(player.getUniqueId(), k -> new HashSet<>()).add(mapId);
         
         // Update last accessed
         database.updateLastAccessed(mapId);
         
-        // Fire event
-        getMap(mapId).thenAccept(optMap -> {
-            if (optMap.isPresent()) {
-                MapLoadEvent event = new MapLoadEvent(optMap.get(), player, virtualId);
-                Bukkit.getPluginManager().callEvent(event);
+        // Load map data to ensure it's in cache and the MapView is initialized
+        getMapData(mapId).thenAccept(optData -> {
+            if (optData.isPresent()) {
+                MapData data = optData.get();
                 
-                if (!event.isCancelled()) {
-                    sendMapToPlayerInternal(player, mapId, virtualId);
-                }
+                // Ensure the Bukkit MapView is created with the pixel data
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    mapViewManager.getOrCreateBukkitMapId(mapId, data.getPixelsUnsafe());
+                    
+                    // Invalidate for this player to trigger re-render
+                    mapViewManager.getRenderer(mapId).ifPresent(r -> r.invalidatePlayer(player.getUniqueId()));
+                    
+                    // Fire event
+                    getMap(mapId).thenAccept(optMap -> {
+                        if (optMap.isPresent()) {
+                            int bukkitMapId = mapViewManager.getBukkitMapId(mapId);
+                            MapLoadEvent event = new MapLoadEvent(optMap.get(), player, bukkitMapId);
+                            Bukkit.getPluginManager().callEvent(event);
+                        }
+                    });
+                });
             }
         });
     }
@@ -473,13 +545,20 @@ public class MapManager implements FineMapsAPI {
     }
 
     /**
-     * Called when a player quits to clean up their virtual IDs.
+     * Called when a player quits to clean up their map state.
      *
      * @param playerUUID The player's UUID
      */
     public void onPlayerQuit(UUID playerUUID) {
-        virtualIdManager.clearPlayerSpace(playerUUID);
-        playerLoadedMaps.remove(playerUUID);
+        // Clear player from loaded maps tracking
+        Set<Long> loadedMaps = playerLoadedMaps.remove(playerUUID);
+        
+        // Invalidate renderers for this player (so they re-render on rejoin)
+        if (loadedMaps != null) {
+            for (long mapId : loadedMaps) {
+                mapViewManager.getRenderer(mapId).ifPresent(r -> r.invalidatePlayer(playerUUID));
+            }
+        }
     }
 
     /**
@@ -559,11 +638,10 @@ public class MapManager implements FineMapsAPI {
         database.getStaleMapIds(staleTime).thenAccept(staleIds -> {
             for (Long id : staleIds) {
                 mapDataCache.remove(id);
+                // Note: We don't release MapViews here as they might still be in use
+                // MapViews are persistent in Minecraft, releasing them could cause issues
             }
         });
-        
-        // Clean up virtual IDs
-        virtualIdManager.cleanup(mapDataCache.keySet());
     }
 
     /**
@@ -574,5 +652,15 @@ public class MapManager implements FineMapsAPI {
         imageProcessor.shutdown();
         mapDataCache.clear();
         playerLoadedMaps.clear();
+        mapViewManager.clear();
+    }
+    
+    /**
+     * Gets the MapViewManager for direct access if needed.
+     *
+     * @return The MapViewManager
+     */
+    public MapViewManager getMapViewManager() {
+        return mapViewManager;
     }
 }
