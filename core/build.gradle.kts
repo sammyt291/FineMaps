@@ -2,18 +2,20 @@ plugins {
     `java-library`
 }
 
+repositories {
+    maven("https://redempt.dev")
+}
+
 dependencies {
     api(project(":api"))
     
-    compileOnly("org.spigotmc:spigot-api:1.12.2-R0.1-SNAPSHOT")
+    compileOnly("org.spigotmc:spigot-api:1.20.4-R0.1-SNAPSHOT")
     
-    // RedLib - optional, used for config management
-    // Install locally or add your own repository if needed:
-    // compileOnly("com.github.Redempt:RedLib:6.5.7")
+    // RedLib for config management
+    compileOnly("com.github.Redempt:RedLib:6.5.8")
     
-    // ProtocolLib - required for packet interception
-    // Install locally or use: https://repo.dmulloy2.net/repository/public/
-    // compileOnly("com.comphenix.protocol:ProtocolLib:5.1.0")
+    // ProtocolLib for packet interception
+    compileOnly("net.dmulloy2:ProtocolLib:5.4.0")
     
     // Database dependencies - will be shaded
     implementation("com.zaxxer:HikariCP:4.0.3")

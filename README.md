@@ -223,9 +223,28 @@ The built JAR will be in `plugin/build/libs/MapDB-1.0.0.jar`.
 | Task | Description |
 |------|-------------|
 | `./gradlew build` | Build the plugin JAR |
-| `./gradlew shadowJar` | Build shaded JAR with dependencies |
+| `./gradlew :plugin:shadowJar` | Build shaded JAR with dependencies |
 | `./gradlew clean` | Clean build directories |
 | `./gradlew :api:jar` | Build only the API module |
+
+### Dependencies
+
+The project uses the following external dependencies:
+
+**ProtocolLib** (from Maven Central):
+```kotlin
+compileOnly("net.dmulloy2:ProtocolLib:5.4.0")
+```
+
+**RedLib** (from redempt.dev):
+```kotlin
+repositories {
+    maven("https://redempt.dev")
+}
+dependencies {
+    implementation("com.github.Redempt:RedLib:6.5.8")
+}
+```
 
 ## Supported Versions
 

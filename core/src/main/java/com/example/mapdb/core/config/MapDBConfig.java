@@ -2,9 +2,11 @@ package com.example.mapdb.core.config;
 
 import redempt.redlib.config.annotations.Comment;
 import redempt.redlib.config.annotations.ConfigMappable;
-import redempt.redlib.config.annotations.ConfigPath;
+import redempt.redlib.config.annotations.ConfigName;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -15,19 +17,19 @@ import java.util.Map;
 public class MapDBConfig {
 
     @Comment("Database configuration")
-    @ConfigPath("database")
+    @ConfigName("database")
     private DatabaseConfig database = new DatabaseConfig();
 
     @Comment("Permission settings")
-    @ConfigPath("permissions")
+    @ConfigName("permissions")
     private PermissionsConfig permissions = new PermissionsConfig();
 
     @Comment("Map settings")
-    @ConfigPath("maps")
+    @ConfigName("maps")
     private MapSettings maps = new MapSettings();
 
     @Comment("Image processing settings")
-    @ConfigPath("images")
+    @ConfigName("images")
     private ImageConfig images = new ImageConfig();
 
     public DatabaseConfig getDatabase() {
@@ -49,15 +51,15 @@ public class MapDBConfig {
     @ConfigMappable
     public static class DatabaseConfig {
         @Comment("Database type: 'sqlite' or 'mysql'")
-        @ConfigPath("type")
+        @ConfigName("type")
         private String type = "sqlite";
 
         @Comment("SQLite file name (relative to plugin folder)")
-        @ConfigPath("sqlite.file")
+        @ConfigName("sqlite-file")
         private String sqliteFile = "maps.db";
 
         @Comment("MySQL connection settings")
-        @ConfigPath("mysql")
+        @ConfigName("mysql")
         private MySQLConfig mysql = new MySQLConfig();
 
         public String getType() {
@@ -83,22 +85,22 @@ public class MapDBConfig {
 
     @ConfigMappable
     public static class MySQLConfig {
-        @ConfigPath("host")
+        @ConfigName("host")
         private String host = "localhost";
 
-        @ConfigPath("port")
+        @ConfigName("port")
         private int port = 3306;
 
-        @ConfigPath("database")
+        @ConfigName("database")
         private String database = "mapdb";
 
-        @ConfigPath("username")
+        @ConfigName("username")
         private String username = "root";
 
-        @ConfigPath("password")
+        @ConfigName("password")
         private String password = "";
 
-        @ConfigPath("use-ssl")
+        @ConfigName("use-ssl")
         private boolean useSSL = false;
 
         public String getHost() {
@@ -129,24 +131,24 @@ public class MapDBConfig {
     @ConfigMappable
     public static class PermissionsConfig {
         @Comment("Default map creation limit for players (-1 for unlimited)")
-        @ConfigPath("default-limit")
+        @ConfigName("default-limit")
         private int defaultLimit = 100;
 
         @Comment("Map limits per permission group")
-        @ConfigPath("group-limits")
+        @ConfigName("group-limits")
         private Map<String, Integer> groupLimits = new HashMap<>();
 
         @Comment("Whether to allow URL image imports")
-        @ConfigPath("allow-url-import")
+        @ConfigName("allow-url-import")
         private boolean allowUrlImport = true;
 
         @Comment("Maximum image size for URL imports (in pixels)")
-        @ConfigPath("max-import-size")
+        @ConfigName("max-import-size")
         private int maxImportSize = 4096;
 
         @Comment("Allowed URL domains for image import (empty for all)")
-        @ConfigPath("allowed-domains")
-        private java.util.List<String> allowedDomains = new java.util.ArrayList<>();
+        @ConfigName("allowed-domains")
+        private List<String> allowedDomains = new ArrayList<>();
 
         public int getDefaultLimit() {
             return defaultLimit;
@@ -164,7 +166,7 @@ public class MapDBConfig {
             return maxImportSize;
         }
 
-        public java.util.List<String> getAllowedDomains() {
+        public List<String> getAllowedDomains() {
             return allowedDomains;
         }
 
@@ -176,23 +178,23 @@ public class MapDBConfig {
     @ConfigMappable
     public static class MapSettings {
         @Comment("Maximum virtual map IDs to use (0-32000)")
-        @ConfigPath("max-virtual-ids")
+        @ConfigName("max-virtual-ids")
         private int maxVirtualIds = 30000;
 
         @Comment("How often to clean up unused virtual IDs (in ticks)")
-        @ConfigPath("cleanup-interval")
+        @ConfigName("cleanup-interval")
         private int cleanupInterval = 6000; // 5 minutes
 
         @Comment("Time before a map is considered stale for cleanup (in milliseconds)")
-        @ConfigPath("stale-time")
+        @ConfigName("stale-time")
         private long staleTime = 86400000; // 24 hours
 
         @Comment("Whether to show particle outlines for map previews on older versions")
-        @ConfigPath("use-particles-legacy")
+        @ConfigName("use-particles-legacy")
         private boolean useParticlesLegacy = true;
 
         @Comment("Whether to use block displays for map previews on 1.19.4+")
-        @ConfigPath("use-block-displays")
+        @ConfigName("use-block-displays")
         private boolean useBlockDisplays = true;
 
         public int getMaxVirtualIds() {
@@ -219,23 +221,23 @@ public class MapDBConfig {
     @ConfigMappable
     public static class ImageConfig {
         @Comment("Whether to use dithering by default")
-        @ConfigPath("default-dither")
+        @ConfigName("default-dither")
         private boolean defaultDither = true;
 
         @Comment("Maximum width for multi-block maps (in blocks)")
-        @ConfigPath("max-width")
+        @ConfigName("max-width")
         private int maxWidth = 10;
 
         @Comment("Maximum height for multi-block maps (in blocks)")
-        @ConfigPath("max-height")
+        @ConfigName("max-height")
         private int maxHeight = 10;
 
         @Comment("Connection timeout for URL imports (in milliseconds)")
-        @ConfigPath("connection-timeout")
+        @ConfigName("connection-timeout")
         private int connectionTimeout = 10000;
 
         @Comment("Read timeout for URL imports (in milliseconds)")
-        @ConfigPath("read-timeout")
+        @ConfigName("read-timeout")
         private int readTimeout = 30000;
 
         public boolean isDefaultDither() {

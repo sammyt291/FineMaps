@@ -42,10 +42,10 @@ configure(subprojects.filter { it.name == "api" }) {
     }
 }
 
-// Core module targets Java 8 for compatibility
+// Core module targets Java 17 (required by ProtocolLib 5.4.0)
 configure(subprojects.filter { it.name == "core" }) {
     tasks.withType<JavaCompile> {
-        options.release.set(8)
+        options.release.set(17)
     }
 }
 
