@@ -39,8 +39,8 @@ public class MultiBlockMapHandler {
     // Track preview tasks per player
     private final Map<UUID, BukkitTask> playerPreviewTasks = new ConcurrentHashMap<>();
     
-    // Track preview display entities per player (for block display previews)
-    private final Map<UUID, List<Integer>> playerPreviewDisplays = new ConcurrentHashMap<>();
+    // Track preview display entity per player (for block display previews)
+    private final Map<UUID, Integer> playerPreviewDisplay = new ConcurrentHashMap<>();
     
     // Track which players have preview task running
     private final Set<UUID> playersWithPreview = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -213,18 +213,21 @@ public class MultiBlockMapHandler {
      * @param player The player
      */
     private void clearPreview(Player player) {
-        // Clear preview state
+        // Clear preview state and display
         playerPreviewStates.remove(player.getUniqueId());
-        
-        // Clear block displays
-        List<Integer> displays = playerPreviewDisplays.remove(player.getUniqueId());
-        if (displays != null) {
-            for (int displayId : displays) {
-                mapManager.getNmsAdapter().removePreviewDisplay(displayId);
-            }
-        }
+        clearPreviewDisplayOnly(player);
     }
     
+    /**
+     * Clears only the preview display entity (keeps preview state intact).
+     */
+    private void clearPreviewDisplayOnly(Player player) {
+        Integer displayId = playerPreviewDisplay.remove(player.getUniqueId());
+        if (displayId != null) {
+            mapManager.getNmsAdapter().removePreviewDisplay(displayId);
+        }
+    }
+
     /**
      * Shows a placement preview for the multi-block map.
      *
@@ -243,40 +246,35 @@ public class MultiBlockMapHandler {
         Block hitBlock = result.getHitBlock();
         BlockFace hitFace = result.getHitBlockFace();
         
-        // Only allow placement on vertical surfaces (walls)
-        if (hitFace == BlockFace.UP || hitFace == BlockFace.DOWN) {
-            clearPreview(player);
-            return;
-        }
-        
         // Get dimensions from item
         int width = mapManager.getMultiBlockWidth(item);
         int height = mapManager.getMultiBlockHeight(item);
-        
-        // Calculate placement area - now using adjusted anchor position
+
+        // Calculate placement area (anchor is the air block the frame(s) would occupy)
         Location anchorLoc = hitBlock.getRelative(hitFace).getLocation();
-        Location startLoc = calculateStartLocation(anchorLoc, hitFace, width, height);
-        BlockFace rightDir = getRight(hitFace);
-        
+        PlacementGeometry placement = calculatePlacementGeometry(player, anchorLoc, hitFace, width, height);
+        if (placement == null) {
+            clearPreview(player);
+            return;
+        }
+
         // Check if all positions are valid
         boolean canPlace = true;
         List<Location> previewLocations = new ArrayList<>();
-        
+
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
-                Location loc = startLoc.clone()
-                    .add(rightDir.getModX() * x, -y, rightDir.getModZ() * x);
-                    
+                Location loc = placement.locationAt(x, y);
                 previewLocations.add(loc.clone());
-                
+
                 Block previewBlock = loc.getBlock();
                 Block behindBlock = previewBlock.getRelative(hitFace.getOppositeFace());
-                
+
                 // Check if space is air and has solid block behind
                 if (!previewBlock.getType().isAir() || !behindBlock.getType().isSolid()) {
                     canPlace = false;
                 }
-                
+
                 // Check for existing item frames
                 Location checkLoc = loc.clone().add(0.5, 0.5, 0.5);
                 for (Entity entity : loc.getWorld().getNearbyEntities(checkLoc, 0.5, 0.5, 0.5)) {
@@ -290,7 +288,7 @@ public class MultiBlockMapHandler {
         
         // Check if we need to update the preview (optimization)
         PreviewState currentState = playerPreviewStates.get(player.getUniqueId());
-        if (currentState != null && currentState.matches(startLoc, hitFace, canPlace, width, height)) {
+        if (currentState != null && currentState.matches(placement.startLocation, hitFace, canPlace, width, height)) {
             // No change, skip update (but still spawn particles if not using block displays)
             if (!useBlockDisplays) {
                 showOutlineParticles(player, previewLocations, hitFace, canPlace);
@@ -299,57 +297,75 @@ public class MultiBlockMapHandler {
         }
         
         // Update state
-        playerPreviewStates.put(player.getUniqueId(), new PreviewState(startLoc, hitFace, canPlace, width, height));
+        playerPreviewStates.put(player.getUniqueId(), new PreviewState(placement.startLocation, hitFace, canPlace, width, height));
         
         // Show preview using block displays (modern) or particles (legacy)
         if (useBlockDisplays) {
-            showBlockDisplayPreview(player, previewLocations, hitFace, canPlace);
+            showBlockDisplayPreview(player, anchorLoc, canPlace);
         } else {
             showOutlineParticles(player, previewLocations, hitFace, canPlace);
         }
     }
 
     /**
+     * Geometry for multi-block placement across wall/floor/ceiling.
+     */
+    private static class PlacementGeometry {
+        final Location startLocation;
+        final BlockFace right;
+        final BlockFace down; // null for wall placement (uses Y axis)
+        final boolean isWall;
+
+        private PlacementGeometry(Location startLocation, BlockFace right, BlockFace down, boolean isWall) {
+            this.startLocation = startLocation;
+            this.right = right;
+            this.down = down;
+            this.isWall = isWall;
+        }
+
+        Location locationAt(int x, int y) {
+            Location loc = startLocation.clone().add(right.getModX() * x, 0, right.getModZ() * x);
+            if (isWall) {
+                return loc.add(0, -y, 0);
+            }
+            return loc.add(down.getModX() * y, 0, down.getModZ() * y);
+        }
+    }
+
+    private PlacementGeometry calculatePlacementGeometry(Player player, Location anchorLoc, BlockFace facing, int width, int height) {
+        if (facing == BlockFace.UP || facing == BlockFace.DOWN) {
+            // Floor/ceiling placement: determine orientation from player yaw.
+            BlockFace playerFacing = (player != null)
+                ? getHorizontalFacing(player.getLocation().getYaw())
+                : BlockFace.NORTH;
+            BlockFace downDir = playerFacing.getOppositeFace(); // bottom of image toward player
+            BlockFace rightDir = getRightOfPlayerFacing(playerFacing);
+
+            Location startLoc = calculateStartLocationHorizontal(anchorLoc, rightDir, downDir, width, height);
+            return new PlacementGeometry(startLoc, rightDir, downDir, false);
+        }
+
+        // Wall placement (existing behavior)
+        Location startLoc = calculateStartLocation(anchorLoc, facing, width, height);
+        BlockFace rightDir = getRight(facing);
+        return new PlacementGeometry(startLoc, rightDir, null, true);
+    }
+
+    /**
      * Shows a preview using block display entities (modern versions).
      *
      * @param player The player
-     * @param locations The locations to show preview at
-     * @param facing The facing direction
+     * @param anchorLocation The anchor location the player targeted
      * @param valid Whether placement is valid
      */
-    private void showBlockDisplayPreview(Player player, List<Location> locations, BlockFace facing, boolean valid) {
-        // Clear existing block displays first
-        clearPreview(player);
-        
-        List<Integer> displayIds = new ArrayList<>();
-        
-        for (Location loc : locations) {
-            // Offset the display slightly toward the player for visibility
-            Location displayLoc = loc.clone();
-            double offset = 0.01;
-            
-            switch (facing) {
-                case NORTH:
-                    displayLoc.add(0, 0, offset);
-                    break;
-                case SOUTH:
-                    displayLoc.add(0, 0, 1 - offset);
-                    break;
-                case EAST:
-                    displayLoc.add(1 - offset, 0, 0);
-                    break;
-                case WEST:
-                    displayLoc.add(offset, 0, 0);
-                    break;
-            }
-            
-            int displayId = mapManager.getNmsAdapter().spawnPreviewBlockDisplay(displayLoc, valid);
-            if (displayId != -1) {
-                displayIds.add(displayId);
-            }
+    private void showBlockDisplayPreview(Player player, Location anchorLocation, boolean valid) {
+        // Clear existing display entity (keep state so we can avoid respawns)
+        clearPreviewDisplayOnly(player);
+
+        int displayId = mapManager.getNmsAdapter().spawnPreviewBlockDisplay(anchorLocation, valid);
+        if (displayId != -1) {
+            playerPreviewDisplay.put(player.getUniqueId(), displayId);
         }
-        
-        playerPreviewDisplays.put(player.getUniqueId(), displayIds);
     }
     
     /**
@@ -449,6 +465,18 @@ public class MultiBlockMapHandler {
             player.spawnParticle(dustParticle, faceX, y + 1, z + i, 1, dustOptions);
             player.spawnParticle(dustParticle, faceX, y + i, z, 1, dustOptions);
             player.spawnParticle(dustParticle, faceX, y + i, z + 1, 1, dustOptions);
+        } else if (facing == BlockFace.UP) {
+            double faceY = y + 1 - offset;
+            player.spawnParticle(dustParticle, x + i, faceY, z, 1, dustOptions);
+            player.spawnParticle(dustParticle, x + i, faceY, z + 1, 1, dustOptions);
+            player.spawnParticle(dustParticle, x, faceY, z + i, 1, dustOptions);
+            player.spawnParticle(dustParticle, x + 1, faceY, z + i, 1, dustOptions);
+        } else if (facing == BlockFace.DOWN) {
+            double faceY = y + offset;
+            player.spawnParticle(dustParticle, x + i, faceY, z, 1, dustOptions);
+            player.spawnParticle(dustParticle, x + i, faceY, z + 1, 1, dustOptions);
+            player.spawnParticle(dustParticle, x, faceY, z + i, 1, dustOptions);
+            player.spawnParticle(dustParticle, x + 1, faceY, z + i, 1, dustOptions);
         }
     }
     
@@ -481,6 +509,14 @@ public class MultiBlockMapHandler {
             double faceX = x + 1 - offset;
             player.spawnParticle(particle, faceX, y, z + i, 1, 0, 0, 0, 0);
             player.spawnParticle(particle, faceX, y + 1, z + i, 1, 0, 0, 0, 0);
+        } else if (facing == BlockFace.UP) {
+            double faceY = y + 1 - offset;
+            player.spawnParticle(particle, x + i, faceY, z, 1, 0, 0, 0, 0);
+            player.spawnParticle(particle, x + i, faceY, z + 1, 1, 0, 0, 0, 0);
+        } else if (facing == BlockFace.DOWN) {
+            double faceY = y + offset;
+            player.spawnParticle(particle, x + i, faceY, z, 1, 0, 0, 0, 0);
+            player.spawnParticle(particle, x + i, faceY, z + 1, 1, 0, 0, 0, 0);
         }
     }
     
@@ -507,22 +543,20 @@ public class MultiBlockMapHandler {
         Block hitBlock = result.getHitBlock();
         BlockFace hitFace = result.getHitBlockFace();
         
-        // Only allow placement on vertical surfaces (walls)
-        if (hitFace == BlockFace.UP || hitFace == BlockFace.DOWN) {
-            player.sendMessage(ChatColor.RED + "Maps can only be placed on walls.");
-            return false;
-        }
-        
         // Get dimensions to calculate proper start location
         int width = mapManager.getMultiBlockWidth(item);
         int height = mapManager.getMultiBlockHeight(item);
         
         // Calculate the start location based on the clicked position
         Location clickedLoc = hitBlock.getRelative(hitFace).getLocation();
-        Location startLoc = calculateStartLocation(clickedLoc, hitFace, width, height);
+        PlacementGeometry placement = calculatePlacementGeometry(player, clickedLoc, hitFace, width, height);
+        if (placement == null) {
+            player.sendMessage(ChatColor.RED + "Cannot place map here.");
+            return false;
+        }
         
         // Try to place the map
-        boolean success = placeMultiBlockMap(groupId, startLoc, hitFace, player);
+        boolean success = placeMultiBlockMap(groupId, placement.startLocation, hitFace, player);
         
         if (success) {
             // Remove item from player's hand
@@ -780,14 +814,20 @@ public class MultiBlockMapHandler {
         World world = startLocation.getWorld();
         if (world == null) return false;
         
-        // Calculate placement positions based on facing direction
-        BlockFace rightDirection = getRight(facing);
+        // Calculate placement geometry based on facing direction.
+        // For floor/ceiling placement, orientation is taken from the player if available.
+        PlacementGeometry placement = calculatePlacementGeometry(player, startLocation, facing, multiMap.getWidth(), multiMap.getHeight());
+        if (placement == null) {
+            if (player != null) {
+                player.sendMessage(ChatColor.RED + "Cannot place map here.");
+            }
+            return false;
+        }
         
         // Check if all positions are valid
         for (int y = 0; y < multiMap.getHeight(); y++) {
             for (int x = 0; x < multiMap.getWidth(); x++) {
-                Location loc = startLocation.clone()
-                    .add(rightDirection.getModX() * x, -y, rightDirection.getModZ() * x);
+                Location loc = placement.locationAt(x, y);
                 Block airBlock = loc.getBlock();
                 Block behindBlock = airBlock.getRelative(facing.getOppositeFace());
                 
@@ -829,8 +869,7 @@ public class MultiBlockMapHandler {
                 StoredMap map = multiMap.getMapAt(x, y);
                 if (map == null) continue;
                 
-                Location loc = startLocation.clone()
-                    .add(rightDirection.getModX() * x, -y, rightDirection.getModZ() * x);
+                Location loc = placement.locationAt(x, y);
                 
                 // Spawn item frame
                 ItemFrame frame = world.spawn(loc, ItemFrame.class);
@@ -897,6 +936,34 @@ public class MultiBlockMapHandler {
     }
 
     /**
+     * Gets the cardinal horizontal facing (N/E/S/W) from a yaw value.
+     */
+    private BlockFace getHorizontalFacing(float yaw) {
+        // Normalize yaw to [0, 360)
+        float y = yaw % 360.0f;
+        if (y < 0) y += 360.0f;
+
+        // Minecraft yaw: 0 = South, 90 = West, 180 = North, 270 = East
+        if (y >= 315 || y < 45) return BlockFace.SOUTH;
+        if (y < 135) return BlockFace.WEST;
+        if (y < 225) return BlockFace.NORTH;
+        return BlockFace.EAST;
+    }
+
+    /**
+     * Gets the player's RIGHT direction given their facing direction.
+     */
+    private BlockFace getRightOfPlayerFacing(BlockFace facing) {
+        switch (facing) {
+            case NORTH: return BlockFace.EAST;
+            case SOUTH: return BlockFace.WEST;
+            case EAST: return BlockFace.SOUTH;
+            case WEST: return BlockFace.NORTH;
+            default: return BlockFace.EAST;
+        }
+    }
+
+    /**
      * Calculates the top-left start location for placement based on where the player clicked.
      * 
      * The player clicks where they want the anchor to be:
@@ -935,6 +1002,29 @@ public class MultiBlockMapHandler {
         // Move UP by anchorY blocks (since placement goes down with -y)
         startLoc.add(0, anchorY, 0);
         
+        return startLoc;
+    }
+
+    /**
+     * Calculates the start location for floor/ceiling placement.
+     *
+     * The coordinate system is:
+     * - x axis: rightDir
+     * - y axis: downDir (horizontal, toward the bottom of the image)
+     */
+    private Location calculateStartLocationHorizontal(Location clickedLoc, BlockFace rightDir, BlockFace downDir, int width, int height) {
+        int anchorX = width / 2;
+        int anchorY = height - 1;
+
+        Location startLoc = clickedLoc.clone();
+
+        // Move LEFT by anchorX
+        startLoc.add(-rightDir.getModX() * anchorX, 0, -rightDir.getModZ() * anchorX);
+
+        // Move "UP" (opposite of down) by anchorY
+        BlockFace upDir = downDir.getOppositeFace();
+        startLoc.add(upDir.getModX() * anchorY, 0, upDir.getModZ() * anchorY);
+
         return startLoc;
     }
 
