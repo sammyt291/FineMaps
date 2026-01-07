@@ -14,6 +14,20 @@ A Minecraft server plugin that stores map pixel and palette data in a database (
 - **Map Preview**: Block displays (1.19.4+) or particle outlines for map preview while holding
 - **Permission-Based Limits**: Configurable per-player/group map creation limits
 
+## Supported Versions
+
+| Minecraft | Status | Notes |
+|-----------|--------|-------|
+| 1.21.x | ✅ Full Support | Includes Folia support |
+| 1.20.x | ✅ Full Support | Block displays available |
+| 1.19.4+ | ✅ Full Support | Block displays available |
+| 1.19.x | ✅ Full Support | Particle previews |
+| 1.18.x | ✅ Full Support | Particle previews |
+| 1.17.x | ✅ Full Support | Particle previews |
+| 1.16.x | ✅ Full Support | Particle previews |
+| 1.13-1.15 | ✅ Full Support | Particle previews |
+| 1.12.2 | ✅ Full Support | Legacy map system |
+
 ## Requirements
 
 - Java 8+ (Java 17+ recommended for 1.18+, Java 21 for 1.21+)
@@ -245,20 +259,6 @@ dependencies {
     implementation("com.github.Redempt:RedLib:6.5.8")
 }
 ```
-
-## Supported Versions
-
-| Minecraft | Status | Notes |
-|-----------|--------|-------|
-| 1.21.x | ✅ Full Support | Includes Folia support |
-| 1.20.x | ✅ Full Support | Block displays available |
-| 1.19.4+ | ✅ Full Support | Block displays available |
-| 1.19.x | ✅ Full Support | Particle previews |
-| 1.18.x | ✅ Full Support | Particle previews |
-| 1.17.x | ✅ Full Support | Particle previews |
-| 1.16.x | ✅ Full Support | Particle previews |
-| 1.13-1.15 | ✅ Full Support | Particle previews |
-| 1.12.2 | ✅ Full Support | Legacy map system |
 
 ## License
 
