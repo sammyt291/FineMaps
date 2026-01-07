@@ -328,14 +328,26 @@ public class DebugCommand implements CommandExecutor, TabCompleter {
                     backing.setType(Material.SMOOTH_STONE, false);
                 }
 
-                // Spawn the item frame centered on the block, facing the player
-                Location spawnLoc = new Location(wallBase.getWorld(), x + 0.5, y + 0.5, z + 0.5);
-                ItemFrame frame = (ItemFrame) wallBase.getWorld().spawnEntity(spawnLoc, EntityType.ITEM_FRAME);
-                frame.setFacingDirection(place.front.getOppositeFace(), true);
+                // Spawn the item frame in the AIR block in front of the backing wall.
+                // ItemFrames attach to the solid block behind them; spawning inside the backing block
+                // causes them to immediately detach/pop off.
+                BlockFace frameFacing = place.front.getOppositeFace(); // face toward the player
+                Block airBlock = backing.getRelative(frameFacing);
+                if (!airBlock.getType().isAir()) {
+                    airBlock.setType(Material.AIR, false);
+                }
+
+                ItemFrame frame = wallBase.getWorld().spawn(airBlock.getLocation(), ItemFrame.class);
+                frame.setFacingDirection(frameFacing, true);
+                try {
+                    frame.setFixed(true);
+                } catch (NoSuchMethodError ignored) {
+                }
 
                 long id = mapId.get();
                 ItemStack item = mapManager.createMapItem(id);
                 frame.setItem(item, false);
+                frame.setVisible(false);
 
                 // Proactively load/initialize this map for the placing player
                 mapManager.sendMapToPlayer(player, id);
