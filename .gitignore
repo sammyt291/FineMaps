@@ -37,6 +37,9 @@ bin/
 *.ear
 *.nar
 
+# Allow released jars in root
+!/MapDB*.jar
+
 # OS
 .DS_Store
 Thumbs.db
