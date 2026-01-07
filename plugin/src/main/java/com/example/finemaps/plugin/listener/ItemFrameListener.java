@@ -46,9 +46,14 @@ public class ItemFrameListener implements Listener {
         if (mapManager.isStoredMap(mainHand)) {
             long groupId = mapManager.getGroupIdFromItem(mainHand);
             if (groupId > 0) {
-                // This is part of a multi-block map - handle placement
-                multiBlockHandler.onMapPlace(frame, mainHand, player);
+                // This is a multi-block map item - don't allow placing as regular item frame
+                // Multi-block maps are placed via PlayerInteractEvent in PlayerListener
+                event.setCancelled(true);
+                return;
             }
+            
+            // Single map - track the placement
+            multiBlockHandler.onMapPlace(frame, mainHand, player);
         }
     }
 
@@ -132,9 +137,18 @@ public class ItemFrameListener implements Listener {
         
         // Check if player is placing a stored map into an empty frame
         ItemStack handItem = player.getInventory().getItemInMainHand();
-        if (frameItem == null || frameItem.getType().isAir()) {
-            if (mapManager.isStoredMap(handItem)) {
-                // Let the placement happen, then notify multiblock handler
+        if (handItem != null && mapManager.isStoredMap(handItem)) {
+            // Check if this is a multi-block map item
+            long groupId = mapManager.getGroupIdFromItem(handItem);
+            if (groupId > 0) {
+                // Don't allow placing multi-block map items into frames
+                // They need to be placed via the dedicated placement system
+                event.setCancelled(true);
+                return;
+            }
+            
+            // Single map - let placement happen, then track it
+            if (frameItem == null || frameItem.getType().isAir()) {
                 plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
                     ItemStack newFrameItem = frame.getItem();
                     if (newFrameItem != null && mapManager.isStoredMap(newFrameItem)) {
