@@ -36,30 +36,18 @@ A Minecraft server plugin that stores map pixel and palette data in a database (
 
 ### ProtocolLib Support
 
-ProtocolLib is **optional** but enables the virtual ID system for unlimited maps. Without ProtocolLib, the plugin operates in **basic mode** with standard Bukkit map IDs (limited to ~32,000 maps).
+ProtocolLib is **optional** but enables the virtual ID system for efficient map rendering. Without ProtocolLib, the plugin still stores unlimited maps in the database, but is limited to ~32,000 maps **loaded at the same time**.
 
 | Feature | With ProtocolLib | Without ProtocolLib |
 |---------|------------------|---------------------|
-| Virtual ID System | ✅ Unlimited maps | ❌ Limited to ~32,000 |
+| Database Storage | ✅ Unlimited | ✅ Unlimited |
+| Maps Loaded Simultaneously | ✅ Unlimited | ⚠️ ~32,000 max |
+| Per-Player Virtual IDs | ✅ Yes | ❌ No |
 | Map Packet Interception | ✅ Full control | ❌ Not available |
-| Database Storage | ✅ Full | ✅ Full |
 | Multi-Block Maps | ✅ Full | ✅ Full |
 | Image Import | ✅ Full | ✅ Full |
 
-**Versions supported without ProtocolLib:**
-
-| Minecraft | Status |
-|-----------|--------|
-| 1.21.x | ✅ Basic mode |
-| 1.20.x | ✅ Basic mode |
-| 1.19.x | ✅ Basic mode |
-| 1.18.x | ✅ Basic mode |
-| 1.17.x | ✅ Basic mode |
-| 1.16.x | ✅ Basic mode |
-| 1.13-1.15 | ✅ Basic mode |
-| 1.12.2 | ✅ Basic mode |
-
-All versions from 1.12.2 to 1.21.x work in basic mode without ProtocolLib using native NMS adapters.
+**Without ProtocolLib**: All versions from 1.12.2 to 1.21.x are supported. The database can store unlimited maps, but only ~32,000 can be actively rendered at once (using real Minecraft map IDs).
 
 ## Installation
 
