@@ -1,4 +1,4 @@
-rootProject.name = "mapdb"
+rootProject.name = "finemaps"
 
 include("api")
 include("core")

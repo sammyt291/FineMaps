@@ -31,13 +31,13 @@ tasks {
     }
     
     shadowJar {
-        archiveBaseName.set("MapDB")
+        archiveBaseName.set("FineMaps")
         archiveClassifier.set("")
         
         // Relocate shaded dependencies to avoid conflicts
-        relocate("com.zaxxer.hikari", "com.example.mapdb.libs.hikari")
-        relocate("org.sqlite", "com.example.mapdb.libs.sqlite")
-        relocate("redempt.redlib", "com.example.mapdb.libs.redlib")
+        relocate("com.zaxxer.hikari", "com.example.finemaps.libs.hikari")
+        relocate("org.sqlite", "com.example.finemaps.libs.sqlite")
+        relocate("redempt.redlib", "com.example.finemaps.libs.redlib")
     }
     
     build {

@@ -40,7 +40,7 @@ bin/
 !gradle/wrapper/gradle-wrapper.properties
 
 # Allow released jars in root
-!/MapDB*.jar
+!/FineMaps*.jar
 
 # OS
 .DS_Store
