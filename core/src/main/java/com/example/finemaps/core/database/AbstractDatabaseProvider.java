@@ -356,6 +356,26 @@ public abstract class AbstractDatabaseProvider implements DatabaseProvider {
     }
 
     @Override
+    public CompletableFuture<List<Long>> getMapIdsByPlugin(String pluginId) {
+        return CompletableFuture.supplyAsync(() -> {
+            List<Long> ids = new ArrayList<>();
+            String sql = "SELECT id FROM finemaps_maps WHERE plugin_id = ? ORDER BY id ASC";
+            try (Connection conn = dataSource.getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(sql)) {
+                stmt.setString(1, pluginId);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        ids.add(rs.getLong(1));
+                    }
+                }
+            } catch (SQLException e) {
+                logger.log(Level.SEVERE, "Failed to get map ids by plugin: " + pluginId, e);
+            }
+            return ids;
+        }, executor);
+    }
+
+    @Override
     public CompletableFuture<List<StoredMap>> getMapsByCreator(UUID creatorUUID) {
         return CompletableFuture.supplyAsync(() -> {
             List<StoredMap> maps = new ArrayList<>();

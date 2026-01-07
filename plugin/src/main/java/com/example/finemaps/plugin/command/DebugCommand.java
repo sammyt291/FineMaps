@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * /debug placemaps <mapsPerSecond>
  *   - Builds a moving 2x2 wall of map item frames at world max height - 5
  *   - Teleports the player along while continuously placing maps in front
- *   - Consumes unique, sequential names from the last /debug seed run
+ *   - Iterates through existing DB maps for plugin_id="debug" (no seed required)
  */
 public class DebugCommand implements CommandExecutor, TabCompleter {
 
@@ -222,16 +222,6 @@ public class DebugCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        SeedState state = seedState;
-        if (state == null) {
-            player.sendMessage(ChatColor.RED + "No seed run found. Run /debug seed <num> first.");
-            return true;
-        }
-        if (seeding.get()) {
-            player.sendMessage(ChatColor.YELLOW + "Seed still running. Wait for it to finish, then run placemaps.");
-            return true;
-        }
-
         // Cancel any existing runner
         if (activePlaceTask != null) {
             activePlaceTask.cancel();
@@ -261,34 +251,60 @@ public class DebugCommand implements CommandExecutor, TabCompleter {
 
         player.teleport(start);
 
-        player.sendMessage(ChatColor.GOLD + "Starting map placement at Y=" + baseY + " facing " + front);
-        player.sendMessage(ChatColor.GRAY + "Using names: " + ChatColor.WHITE + state.prefix + "_00000001.." + String.format(Locale.ROOT, "%08d", state.total));
+        player.sendMessage(ChatColor.GOLD + "Loading debug maps from DB...");
 
-        PlaceState placeState = new PlaceState(start, front, right, mapsPerSecond);
-
-        activePlaceTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            if (!player.isOnline()) {
-                handleStop(player);
+        long startedAt = System.currentTimeMillis();
+        database.getMapCount(DEBUG_PLUGIN_ID).thenCompose(total ->
+            database.getMapIdsByPlugin(DEBUG_PLUGIN_ID).thenApply(ids -> new MapsSnapshot(total, ids))
+        ).whenComplete((snapshot, err) -> {
+            if (err != null) {
+                plugin.getLogger().warning("placemaps failed to load ids: " + err.getMessage());
+                Bukkit.getScheduler().runTask(plugin, () -> player.sendMessage(ChatColor.RED + "Failed to load maps: " + err.getMessage()));
                 return;
             }
 
-            // Convert desired rate into a per-tick budget and place whole 2x2 walls only
-            placeState.budget += (placeState.mapsPerSecond / 20.0);
-
-            while (placeState.budget >= MAPS_PER_WALL) {
-                if (!placeOneWall(player, baseY, state, placeState)) {
-                    handleStop(player);
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                if (!player.isOnline()) {
                     return;
                 }
-                placeState.budget -= MAPS_PER_WALL;
-                placeState.stepIndex++;
-            }
-        }, 1L, 1L);
+
+                int total = snapshot.total;
+                List<Long> ids = snapshot.ids;
+                if (ids.isEmpty() || total <= 0) {
+                    player.sendMessage(ChatColor.RED + "No maps found in DB for plugin_id=\"" + DEBUG_PLUGIN_ID + "\"");
+                    return;
+                }
+
+                player.sendMessage(ChatColor.GOLD + "Starting map placement at Y=" + baseY + " facing " + front);
+                player.sendMessage(ChatColor.GRAY + "DB maps: " + ChatColor.WHITE + total + ChatColor.DARK_GRAY + " | placing in ID order");
+
+                PlaceState placeState = new PlaceState(start, front, right, mapsPerSecond, ids, total, startedAt);
+
+                activePlaceTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+                    if (!player.isOnline()) {
+                        handleStop(player);
+                        return;
+                    }
+
+                    // Convert desired rate into a per-tick budget and place whole 2x2 walls only
+                    placeState.budget += (placeState.mapsPerSecond / 20.0);
+
+                    while (placeState.budget >= MAPS_PER_WALL) {
+                        if (!placeOneWall(player, baseY, placeState)) {
+                            handleStop(player);
+                            return;
+                        }
+                        placeState.budget -= MAPS_PER_WALL;
+                        placeState.stepIndex++;
+                    }
+                }, 1L, 1L);
+            });
+        });
 
         return true;
     }
 
-    private boolean placeOneWall(Player player, int baseY, SeedState seed, PlaceState place) {
+    private boolean placeOneWall(Player player, int baseY, PlaceState place) {
         // Compute player path location (move "right" each step) and keep wall "in front"
         Location playerPos = place.start.clone().add(
             place.right.getModX() * (place.stepIndex * 3.0),
@@ -307,15 +323,10 @@ public class DebugCommand implements CommandExecutor, TabCompleter {
         // Place backing blocks + frames
         for (int dy = 0; dy < WALL_HEIGHT; dy++) {
             for (int dx = 0; dx < WALL_WIDTH; dx++) {
-                String nextName = seed.nextName();
-                if (nextName == null) {
-                    player.sendMessage(ChatColor.RED + "Out of seeded map names. Seed more maps first.");
-                    return false;
-                }
-
-                Optional<Long> mapId = mapManager.getMapByName(DEBUG_PLUGIN_ID, nextName).join();
-                if (mapId.isEmpty()) {
-                    player.sendMessage(ChatColor.RED + "Missing map for name: " + nextName);
+                Long nextId = place.nextMapId();
+                if (nextId == null) {
+                    sendPasteProgress(player, place, true);
+                    player.sendMessage(ChatColor.RED + "Out of maps to paste (" + place.pasted + "/" + place.total + ").");
                     return false;
                 }
 
@@ -344,17 +355,37 @@ public class DebugCommand implements CommandExecutor, TabCompleter {
                 } catch (NoSuchMethodError ignored) {
                 }
 
-                long id = mapId.get();
+                long id = nextId;
                 ItemStack item = mapManager.createMapItem(id);
                 frame.setItem(item, false);
                 frame.setVisible(false);
 
                 // Proactively load/initialize this map for the placing player
                 mapManager.sendMapToPlayer(player, id);
+
+                place.pasted++;
+                if (place.pasted % 2000 == 0 || place.pasted >= place.total) {
+                    sendPasteProgress(player, place, false);
+                }
             }
         }
 
         return true;
+    }
+
+    private void sendPasteProgress(Player player, PlaceState place, boolean force) {
+        if (!force && place.total > 0 && place.pasted == place.lastProgressPasted) {
+            return;
+        }
+        place.lastProgressPasted = place.pasted;
+
+        int total = Math.max(place.total, 1);
+        double pct = (place.pasted * 100.0) / total;
+        long ms = System.currentTimeMillis() - place.startedAt;
+        player.sendMessage(
+            ChatColor.GRAY + "Paste progress: " + ChatColor.WHITE + place.pasted + "/" + place.total +
+                ChatColor.DARK_GRAY + " (" + String.format(Locale.ROOT, "%.2f", pct) + "%, " + ms + "ms)"
+        );
     }
 
     private static BlockFace yawToFace(float yaw) {
@@ -446,14 +477,40 @@ public class DebugCommand implements CommandExecutor, TabCompleter {
         private final BlockFace front;
         private final BlockFace right;
         private final int mapsPerSecond;
+        private final List<Long> mapIds;
+        private final int total;
+        private final long startedAt;
+        private int nextIndex = 0;
+        private int pasted = 0;
+        private int lastProgressPasted = 0;
         private int stepIndex = 0;
         private double budget = 0.0;
 
-        private PlaceState(Location start, BlockFace front, BlockFace right, int mapsPerSecond) {
+        private PlaceState(Location start, BlockFace front, BlockFace right, int mapsPerSecond, List<Long> mapIds, int total, long startedAt) {
             this.start = start;
             this.front = front;
             this.right = right;
             this.mapsPerSecond = mapsPerSecond;
+            this.mapIds = mapIds;
+            this.total = total;
+            this.startedAt = startedAt;
+        }
+
+        private Long nextMapId() {
+            if (nextIndex >= mapIds.size()) {
+                return null;
+            }
+            return mapIds.get(nextIndex++);
+        }
+    }
+
+    private static final class MapsSnapshot {
+        private final int total;
+        private final List<Long> ids;
+
+        private MapsSnapshot(int total, List<Long> ids) {
+            this.total = total;
+            this.ids = ids;
         }
     }
 }
