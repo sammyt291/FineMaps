@@ -10,6 +10,7 @@ import com.example.finemaps.core.manager.MapManager;
 import com.example.finemaps.core.manager.MultiBlockMapHandler;
 import com.example.finemaps.api.nms.NMSAdapter;
 import com.example.finemaps.core.nms.NMSAdapterFactory;
+import com.example.finemaps.plugin.command.DebugCommand;
 import com.example.finemaps.plugin.command.FineMapsCommand;
 import com.example.finemaps.plugin.listener.ChunkListener;
 import com.example.finemaps.plugin.listener.ItemFrameListener;
@@ -188,6 +189,10 @@ public class FineMapsPlugin extends JavaPlugin {
         FineMapsCommand command = new FineMapsCommand(this);
         getCommand("finemaps").setExecutor(command);
         getCommand("finemaps").setTabCompleter(command);
+
+        DebugCommand debugCommand = new DebugCommand(this);
+        getCommand("debug").setExecutor(debugCommand);
+        getCommand("debug").setTabCompleter(debugCommand);
     }
 
     private void startCleanupTask() {
