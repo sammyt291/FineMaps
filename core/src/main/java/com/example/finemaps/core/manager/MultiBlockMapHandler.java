@@ -438,9 +438,9 @@ public class MultiBlockMapHandler {
         Rotation rot;
         switch (desiredUp) {
             case SOUTH: rot = Rotation.NONE; break;
-            case WEST: rot = Rotation.CLOCKWISE; break;
+            case WEST: rot = Rotation.COUNTER_CLOCKWISE; break;
             case NORTH: rot = Rotation.FLIPPED; break;
-            case EAST: rot = Rotation.COUNTER_CLOCKWISE; break;
+            case EAST: rot = Rotation.CLOCKWISE; break;
             default: rot = Rotation.NONE; break;
         }
 
