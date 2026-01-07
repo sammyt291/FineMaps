@@ -1047,18 +1047,22 @@ public class MultiBlockMapHandler {
             pdc.set(new NamespacedKey(plugin, "finemaps_width"), PersistentDataType.INTEGER, multiMap.getWidth());
             pdc.set(new NamespacedKey(plugin, "finemaps_height"), PersistentDataType.INTEGER, multiMap.getHeight());
             
-            // Add display name showing dimensions
-            meta.setDisplayName(ChatColor.GOLD + "Map (" + multiMap.getWidth() + "x" + multiMap.getHeight() + ")");
+            // Add display name showing art name (size stays in lore)
+            String artName = multiMap.getMetadata();
+            if (artName != null && !artName.isEmpty()) {
+                meta.setDisplayName(ChatColor.GOLD + "Map: " + artName);
+            } else {
+                meta.setDisplayName(ChatColor.GOLD + "Map");
+            }
             
-            // Add lore with info
+            // Add lore with size only (plus usage hints)
             List<String> lore = new ArrayList<>();
-            lore.add(ChatColor.GRAY + "Multi-block map");
             lore.add(ChatColor.GRAY + "Size: " + multiMap.getWidth() + "x" + multiMap.getHeight() + " blocks");
-            lore.add(ChatColor.GRAY + "Group ID: " + groupId);
             lore.add("");
             lore.add(ChatColor.YELLOW + "Look at a wall to see preview");
             lore.add(ChatColor.YELLOW + "Right-click to place");
             meta.setLore(lore);
+            mapManager.hideVanillaMapTooltip(meta);
             
             item.setItemMeta(meta);
         }
