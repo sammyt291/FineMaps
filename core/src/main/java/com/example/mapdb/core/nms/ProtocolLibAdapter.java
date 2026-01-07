@@ -1,5 +1,6 @@
 package com.example.mapdb.core.nms;
 
+import com.example.mapdb.api.nms.NMSAdapter;
 import com.comphenix.protocol.PacketType;
 import com.comphenix.protocol.ProtocolLibrary;
 import com.comphenix.protocol.ProtocolManager;

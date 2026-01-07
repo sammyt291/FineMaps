@@ -1,6 +1,6 @@
 package com.example.mapdb.nms.v1_19_R3;
 
-import com.example.mapdb.core.nms.NMSAdapter;
+import com.example.mapdb.api.nms.NMSAdapter;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
@@ -90,10 +90,10 @@ public class NMS_v1_19_R3 implements NMSAdapter {
         Particle.DustOptions dust = new Particle.DustOptions(org.bukkit.Color.fromRGB(255, 215, 0), 0.5f);
         double x = location.getX(), y = location.getY(), z = location.getZ();
         for (double i = 0; i <= 1; i += 0.1) {
-            player.spawnParticle(Particle.DUST, x + i, y + 1, z, 1, dust);
-            player.spawnParticle(Particle.DUST, x + i, y, z, 1, dust);
-            player.spawnParticle(Particle.DUST, x, y + i, z, 1, dust);
-            player.spawnParticle(Particle.DUST, x + 1, y + i, z, 1, dust);
+            player.spawnParticle(Particle.REDSTONE, x + i, y + 1, z, 1, dust);
+            player.spawnParticle(Particle.REDSTONE, x + i, y, z, 1, dust);
+            player.spawnParticle(Particle.REDSTONE, x, y + i, z, 1, dust);
+            player.spawnParticle(Particle.REDSTONE, x + 1, y + i, z, 1, dust);
         }
     }
 

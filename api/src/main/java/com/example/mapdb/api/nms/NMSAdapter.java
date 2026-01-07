@@ -1,4 +1,4 @@
-package com.example.mapdb.core.nms;
+package com.example.mapdb.api.nms;
 
 import org.bukkit.Location;
 import org.bukkit.entity.Player;

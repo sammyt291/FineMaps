@@ -10,7 +10,7 @@ import com.example.mapdb.api.map.StoredMap;
 import com.example.mapdb.core.config.MapDBConfig;
 import com.example.mapdb.core.database.DatabaseProvider;
 import com.example.mapdb.core.image.ImageProcessor;
-import com.example.mapdb.core.nms.NMSAdapter;
+import com.example.mapdb.api.nms.NMSAdapter;
 import com.example.mapdb.core.virtual.VirtualIdManager;
 import org.bukkit.Bukkit;
 import org.bukkit.NamespacedKey;

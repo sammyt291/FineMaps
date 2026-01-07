@@ -2,7 +2,7 @@ package com.example.mapdb.plugin.listener;
 
 import com.example.mapdb.core.config.MapDBConfig;
 import com.example.mapdb.core.manager.MapManager;
-import com.example.mapdb.core.nms.NMSAdapter;
+import com.example.mapdb.api.nms.NMSAdapter;
 import com.example.mapdb.plugin.MapDBPlugin;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
