@@ -16,6 +16,7 @@ import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.RayTraceResult;
+import org.bukkit.inventory.EquipmentSlot;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -173,7 +174,11 @@ public class MultiBlockMapHandler {
                     return;
                 }
                 
+                // Prefer main-hand, fall back to off-hand
                 ItemStack held = p.getInventory().getItemInMainHand();
+                if (held == null || !mapManager.isStoredMap(held)) {
+                    held = p.getInventory().getItemInOffHand();
+                }
                 if (held == null || !mapManager.isStoredMap(held)) {
                     clearPreview(p);
                     stopPreviewTask(p);
@@ -658,13 +663,22 @@ public class MultiBlockMapHandler {
      * @return true if placed successfully
      */
     public boolean tryPlaceStoredMap(Player player, ItemStack item) {
+        return tryPlaceStoredMap(player, item, EquipmentSlot.HAND);
+    }
+
+    public boolean tryPlaceStoredMap(Player player, ItemStack item, EquipmentSlot hand) {
         if (player == null || item == null || !mapManager.isStoredMap(item)) {
             return false;
         }
 
         long groupId = mapManager.getGroupIdFromItem(item);
         if (groupId > 0) {
-            return tryPlaceMultiBlockMap(player, item);
+            // Multi-block placement already consumes from main hand; if item is in offhand, consume there.
+            boolean success = tryPlaceMultiBlockMap(player, item);
+            if (success && hand == EquipmentSlot.OFF_HAND) {
+                consumeFromHand(player, item, hand);
+            }
+            return success;
         }
 
         long mapId = mapManager.getMapIdFromItem(item);
@@ -674,20 +688,30 @@ public class MultiBlockMapHandler {
 
         boolean success = tryPlaceSingleMap(player, mapId);
         if (success) {
-            // Remove item from player's hand
-            ItemStack handItem = player.getInventory().getItemInMainHand();
-            if (handItem != null && handItem.isSimilar(item)) {
-                if (handItem.getAmount() > 1) {
-                    handItem.setAmount(handItem.getAmount() - 1);
-                } else {
-                    player.getInventory().setItemInMainHand(null);
-                }
-            }
+            consumeFromHand(player, item, hand);
 
             player.sendMessage(ChatColor.GREEN + "Map placed!");
             stopPreviewTask(player);
         }
         return success;
+    }
+
+    private void consumeFromHand(Player player, ItemStack item, EquipmentSlot hand) {
+        if (player == null) return;
+        ItemStack handItem = (hand == EquipmentSlot.OFF_HAND)
+            ? player.getInventory().getItemInOffHand()
+            : player.getInventory().getItemInMainHand();
+        if (handItem == null || !handItem.isSimilar(item)) return;
+
+        if (handItem.getAmount() > 1) {
+            handItem.setAmount(handItem.getAmount() - 1);
+        } else {
+            if (hand == EquipmentSlot.OFF_HAND) {
+                player.getInventory().setItemInOffHand(null);
+            } else {
+                player.getInventory().setItemInMainHand(null);
+            }
+        }
     }
 
     private boolean tryPlaceSingleMap(Player player, long mapId) {
