@@ -2,14 +2,27 @@ name: Build and Release
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches:
+      - main
+    paths-ignore:
+      - '*.md'
+      - '.gitignore'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g., 1.0.0)'
-        required: true
+        description: 'Version to release (e.g., 1.0.0) - leave empty for auto-increment'
+        required: false
         type: string
+      bump_type:
+        description: 'Version bump type (if version not specified)'
+        required: false
+        type: choice
+        options:
+          - auto
+          - major
+          - minor
+          - patch
+        default: auto
 
 permissions:
   contents: write
@@ -17,6 +30,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Skip if commit is from the bot (to avoid infinite loops)
+    if: "!contains(github.event.head_commit.message, '[skip ci]') && !contains(github.event.head_commit.message, 'Release v')"
     
     steps:
       - name: Checkout repository
@@ -35,14 +50,62 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       
-      - name: Extract version from tag
+      - name: Determine version bump type
+        id: bump_type
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
+            echo "BUMP_TYPE=manual" >> $GITHUB_OUTPUT
+            echo "Using manual version: ${{ inputs.version }}"
+          elif [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ inputs.bump_type }}" != "auto" ]; then
+            echo "BUMP_TYPE=${{ inputs.bump_type }}" >> $GITHUB_OUTPUT
+            echo "Using specified bump type: ${{ inputs.bump_type }}"
+          else
+            # Auto-detect from commit message
+            COMMIT_MSG="${{ github.event.head_commit.message }}"
+            if echo "$COMMIT_MSG" | grep -qiE "^feat|feature|new|add"; then
+              echo "BUMP_TYPE=major" >> $GITHUB_OUTPUT
+              echo "Detected feature commit - major bump"
+            elif echo "$COMMIT_MSG" | grep -qiE "^fix|bug|patch|hotfix"; then
+              echo "BUMP_TYPE=minor" >> $GITHUB_OUTPUT
+              echo "Detected bug fix commit - minor bump"
+            else
+              echo "BUMP_TYPE=patch" >> $GITHUB_OUTPUT
+              echo "Default to patch bump"
+            fi
+          fi
+      
+      - name: Calculate version
         id: version
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
             VERSION="${{ inputs.version }}"
           else
-            VERSION=${GITHUB_REF#refs/tags/v}
+            # Get the latest tag, default to 0.0.0 if none exists
+            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            LATEST_VERSION=${LATEST_TAG#v}
+            
+            # Parse version components
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST_VERSION"
+            MAJOR=${MAJOR:-0}
+            MINOR=${MINOR:-0}
+            PATCH=${PATCH:-0}
+            
+            BUMP_TYPE="${{ steps.bump_type.outputs.BUMP_TYPE }}"
+            
+            if [ "$BUMP_TYPE" == "major" ]; then
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+            elif [ "$BUMP_TYPE" == "minor" ]; then
+              MINOR=$((MINOR + 1))
+              PATCH=0
+            else
+              PATCH=$((PATCH + 1))
+            fi
+            
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
           fi
+          
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Building version: $VERSION"
       
@@ -63,13 +126,12 @@ jobs:
           cp plugin/build/libs/MapDB-${{ steps.version.outputs.VERSION }}.jar ./MapDB-${{ steps.version.outputs.VERSION }}.jar
           echo "Copied MapDB-${{ steps.version.outputs.VERSION }}.jar to root"
       
-      - name: Commit jar to repository
+      - name: Create tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add MapDB*.jar build.gradle.kts
-          git commit -m "Release v${{ steps.version.outputs.VERSION }} - Add built jar" || echo "No changes to commit"
-          git push origin HEAD:main || echo "Could not push to main"
+          git tag -a "v${{ steps.version.outputs.VERSION }}" -m "Release v${{ steps.version.outputs.VERSION }}"
+          git push origin "v${{ steps.version.outputs.VERSION }}"
       
       - name: Generate changelog
         id: changelog
@@ -111,13 +173,13 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
           name: MapDB v${{ steps.version.outputs.VERSION }}
           body_path: changelog.md
           files: |
             MapDB-${{ steps.version.outputs.VERSION }}.jar
           draft: false
           prerelease: false
-          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
