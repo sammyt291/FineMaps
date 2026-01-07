@@ -323,7 +323,8 @@ public class ItemFrameListener implements Listener {
                 ChatColor.GRAY + " | cw-from-above=" + ChatColor.WHITE + ceilingTopCwFromAbove);
         } else {
             player.sendMessage(ChatColor.YELLOW + "Map top dir (WALL, NONE baseline=UP): " + ChatColor.WHITE + wallTop +
-                ChatColor.GRAY + " | viewerRight=" + ChatColor.WHITE + wallRight);
+                ChatColor.GRAY + " | viewerRight=" + ChatColor.WHITE + wallRight +
+                ChatColor.GRAY + " | placementX+=" + ChatColor.WHITE + (wallRight != null ? wallRight.getOppositeFace() : "<null>"));
         }
     }
 
