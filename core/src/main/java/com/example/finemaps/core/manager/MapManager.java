@@ -277,20 +277,113 @@ public class MapManager implements FineMapsAPI {
         ItemStack item = createMapItem(mapId);
         player.getInventory().addItem(item);
         
-        // Load and send map data
+        // Load and send map data immediately so it doesn't show "UNKNOWN MAP"
         sendMapToPlayer(player, mapId);
+        
+        // Also force update the player's inventory to refresh the item display
+        player.updateInventory();
     }
 
     @Override
     public void giveMultiBlockMapToPlayer(Player player, long groupId) {
-        ItemStack[][] items = createMultiBlockMapItems(groupId);
-        for (ItemStack[] row : items) {
-            for (ItemStack item : row) {
-                if (item != null) {
-                    player.getInventory().addItem(item);
-                }
-            }
+        // Create a single item representing the entire multi-block map
+        ItemStack item = createMultiBlockMapItem(groupId);
+        if (item != null) {
+            player.getInventory().addItem(item);
+            
+            // Pre-load and send all map data to the player so they render correctly
+            getMultiBlockMap(groupId).thenAccept(optMap -> {
+                optMap.ifPresent(multiMap -> {
+                    for (StoredMap map : multiMap.getMaps()) {
+                        sendMapToPlayer(player, map.getId());
+                    }
+                });
+            });
         }
+    }
+    
+    /**
+     * Creates a single item representing an entire multi-block map.
+     *
+     * @param groupId The group ID
+     * @return The item, or null if not found
+     */
+    public ItemStack createMultiBlockMapItem(long groupId) {
+        Optional<MultiBlockMap> optMap = getMultiBlockMap(groupId).join();
+        if (!optMap.isPresent()) {
+            return null;
+        }
+        
+        MultiBlockMap multiMap = optMap.get();
+        
+        // Use the first map (top-left, 0,0) as the display item
+        StoredMap firstMap = multiMap.getMapAt(0, 0);
+        if (firstMap == null && !multiMap.getMaps().isEmpty()) {
+            firstMap = multiMap.getMaps().get(0);
+        }
+        if (firstMap == null) {
+            return null;
+        }
+        
+        ItemStack item = createMapItem(firstMap.getId());
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null) {
+            PersistentDataContainer pdc = meta.getPersistentDataContainer();
+            
+            // Store group ID and dimensions
+            pdc.set(groupIdKey, PersistentDataType.LONG, groupId);
+            pdc.set(new NamespacedKey(plugin, "finemaps_width"), PersistentDataType.INTEGER, multiMap.getWidth());
+            pdc.set(new NamespacedKey(plugin, "finemaps_height"), PersistentDataType.INTEGER, multiMap.getHeight());
+            
+            // Set display name showing dimensions
+            meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map (" + multiMap.getWidth() + "x" + multiMap.getHeight() + ")");
+            
+            // Add lore with info
+            List<String> lore = new ArrayList<>();
+            lore.add(org.bukkit.ChatColor.GRAY + "Multi-block map");
+            lore.add(org.bukkit.ChatColor.GRAY + "Size: " + multiMap.getWidth() + "x" + multiMap.getHeight() + " blocks");
+            lore.add(org.bukkit.ChatColor.GRAY + "Group ID: " + groupId);
+            lore.add("");
+            lore.add(org.bukkit.ChatColor.YELLOW + "Look at a wall to see preview");
+            lore.add(org.bukkit.ChatColor.YELLOW + "Right-click to place");
+            meta.setLore(lore);
+            
+            item.setItemMeta(meta);
+        }
+        
+        return item;
+    }
+    
+    /**
+     * Gets the width of a multi-block map from an item.
+     *
+     * @param item The item
+     * @return The width, or 1 if not a multi-block map
+     */
+    public int getMultiBlockWidth(ItemStack item) {
+        if (item == null) return 1;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return 1;
+        
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Integer width = pdc.get(new NamespacedKey(plugin, "finemaps_width"), PersistentDataType.INTEGER);
+        return width != null ? width : 1;
+    }
+    
+    /**
+     * Gets the height of a multi-block map from an item.
+     *
+     * @param item The item
+     * @return The height, or 1 if not a multi-block map
+     */
+    public int getMultiBlockHeight(ItemStack item) {
+        if (item == null) return 1;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return 1;
+        
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Integer height = pdc.get(new NamespacedKey(plugin, "finemaps_height"), PersistentDataType.INTEGER);
+        return height != null ? height : 1;
     }
 
     @Override
