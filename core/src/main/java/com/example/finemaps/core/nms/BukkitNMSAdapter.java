@@ -12,6 +12,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.MapMeta;
+import org.bukkit.map.MapView;
 
 import java.lang.reflect.Method;
 import java.util.HashMap;
@@ -172,15 +173,45 @@ public class BukkitNMSAdapter implements NMSAdapter {
 
     @Override
     public void sendMapUpdate(Player player, int mapId, byte[] pixels) {
-        // When using MapViewManager, the MapRenderer handles rendering
-        // This method is now a no-op since we use Bukkit's MapRenderer API
-        // The renderer will automatically send map data to clients
+        // In "basic mode" (no ProtocolLib), we can still force the client to receive updated
+        // map pixels by sending the map view to the player. This is critical for smooth
+        // in-world item frame animations (held maps update more often naturally).
+        if (player == null || !player.isOnline() || mapId < 0) {
+            return;
+        }
+
+        try {
+            @SuppressWarnings("deprecation")
+            MapView view = Bukkit.getMap(mapId);
+            if (view == null) {
+                return;
+            }
+            try {
+                // Bukkit API (available across many versions; deprecated on some).
+                player.sendMap(view);
+                return;
+            } catch (Throwable ignored) {
+                // Fall back to reflection on CraftPlayer (older forks / shaded APIs).
+            }
+
+            // Reflection fallback: CraftPlayer#sendMap(MapView)
+            try {
+                Method m = player.getClass().getMethod("sendMap", MapView.class);
+                m.invoke(player, view);
+            } catch (Throwable ignored) {
+                // Best-effort; if we can't send, animation will fall back to render-triggered updates.
+            }
+        } catch (Throwable t) {
+            // Keep this silent; this runs frequently during animations.
+            logger.log(Level.FINEST, "Failed to send map update via Bukkit adapter", t);
+        }
     }
 
     @Override
     public void sendPartialMapUpdate(Player player, int mapId, int startX, int startY,
                                       int width, int height, byte[] pixels) {
-        // Not available without ProtocolLib
+        // Not truly supported without ProtocolLib; best-effort full update.
+        sendMapUpdate(player, mapId, pixels);
     }
 
     @Override
