@@ -123,7 +123,7 @@ Main command: `/finemaps` (aliases: `/fm`, `/maps`)
 | Command | Description | Permission |
 |---------|-------------|------------|
 | `/finemaps create` | Create a blank 1x1 FineMaps map and give it to you | `finemaps.create` |
-| `/finemaps url <url> <name> [w] [h] [raster] [fps]` | Create a 1x1 or multi-block art from a URL (supports GIF/APNG/WEBP/MP4/WEBM) | `finemaps.url` |
+| `/finemaps url <url> <name> [w] [h] [mode] [fps]` | Create a 1x1 or multi-block art from a URL (supports GIF/APNG/WEBP/MP4/WEBM). Mode: `raster` (dithered) or `nearest` (no dithering). | `finemaps.url` |
 | `/finemaps import [mapId] [name]` | Import a vanilla filled map (held or by id) into FineMaps | `finemaps.import` |
 | `/finemaps convert [mapId] [name]` | Alias of `import` | `finemaps.import` |
 | `/finemaps importall [world]` | Bulk-import all vanilla `map_*.dat` files (optionally for one world) | `finemaps.importall` |

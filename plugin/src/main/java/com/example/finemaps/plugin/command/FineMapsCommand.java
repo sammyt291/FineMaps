@@ -70,6 +70,12 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
     private final FineMapsConfig config;
     private final DebugCommand debugCommand;
 
+    // Auto-generated names for /fm importall world map imports:
+    // - v_<world>_<id>
+    // - v_<id> (fallback if world name can't fit)
+    private static final java.util.regex.Pattern VANILLA_WORLD_IMPORT_NAME =
+        java.util.regex.Pattern.compile("^v_(?:\\d+|[a-zA-Z0-9_-]+_\\d+)$");
+
     public FineMapsCommand(FineMapsPlugin plugin, DebugCommand debugCommand) {
         this.plugin = plugin;
         this.mapManager = plugin.getMapManager();
@@ -136,7 +142,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
     private void sendHelp(CommandSender sender) {
         sender.sendMessage(ChatColor.GOLD + "=== FineMaps Commands ===");
-        sender.sendMessage(ChatColor.YELLOW + "/finemaps url <url> <name> [w] [h] [raster] [fps]" +
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps url <url> <name> [w] [h] [mode] [fps]" +
                           ChatColor.GRAY + " - Create map from URL (supports GIF/APNG/WEBP/MP4/WEBM)");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps convert [mapId] [name]" +
                           ChatColor.GRAY + " - Convert/import a vanilla filled map (held or by id)");
@@ -316,7 +322,11 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
     private void openArtBrowserGui(Player player, List<ArtSummary> arts) {
         if (player == null || !player.isOnline()) return;
-        List<ArtSummary> list = arts != null ? arts : Collections.emptyList();
+        List<ArtSummary> list = (arts != null ? arts : Collections.<ArtSummary>emptyList())
+            .stream()
+            // Hide auto-imported vanilla world maps from the GUI (they can spam the gallery).
+            .filter(a -> !isVanillaWorldImportArt(a))
+            .collect(Collectors.toList());
 
         InventoryGUI gui = new InventoryGUI(54, ChatColor.DARK_GREEN + "FineMaps Arts");
         gui.setDestroyOnClose(true);
@@ -977,7 +987,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length < 3) {
-            player.sendMessage(ChatColor.RED + "Usage: /finemaps url <url> <name> [w] [h] [raster] [fps]");
+            player.sendMessage(ChatColor.RED + "Usage: /finemaps url <url> <name> [w] [h] [mode] [fps]");
+            player.sendMessage(ChatColor.GRAY + "Mode: raster | nearest");
             return true;
         }
 
@@ -989,7 +1000,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
 
         // New syntax:
-        // /fm url <url> <name> [w] [h] [raster] [fps]
+        // /fm url <url> <name> [w] [h] [mode] [fps]
         // Legacy fallback:
         // /fm url <name> <url> [w] [h] [dither]
         String urlStr;
@@ -1930,7 +1941,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             if (args.length == 3) return Collections.singletonList("<name>");
             if (args.length == 4) return Collections.singletonList("<w>");
             if (args.length == 5) return Collections.singletonList("<h>");
-            if (args.length == 6) return Arrays.asList("raster", "noraster", "true", "false");
+            if (args.length == 6) return Arrays.asList("raster", "nearest");
             if (args.length == 7) return Collections.singletonList("<fps>");
         }
 
@@ -1969,9 +1980,26 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         if (raw == null) return defaultVal;
         String s = raw.trim().toLowerCase(Locale.ROOT);
         if (s.isEmpty()) return defaultVal;
-        if (s.equals("raster") || s.equals("true") || s.equals("yes") || s.equals("1")) return true;
+        // Preferred explicit modes:
+        // - raster  = dithered (Floyd–Steinberg) palette mapping
+        // - nearest = nearest-color palette mapping (no dithering)
+        if (s.equals("raster")) return true;
+        if (s.equals("nearest") || s.equals("nearestcolor") || s.equals("nearest-colors") || s.equals("nearest-colour") ||
+            s.equals("quantize") || s.equals("quantise") || s.equals("palette") || s.equals("nodither") || s.equals("no-dither")) {
+            return false;
+        }
+
+        // Backwards compatibility (old scripts/configs):
+        if (s.equals("true") || s.equals("yes") || s.equals("1")) return true;
         if (s.equals("noraster") || s.equals("false") || s.equals("no") || s.equals("0")) return false;
         return Boolean.parseBoolean(s);
+    }
+
+    private boolean isVanillaWorldImportArt(ArtSummary art) {
+        if (art == null) return false;
+        String name = art.getName();
+        if (name == null) return false;
+        return VANILLA_WORLD_IMPORT_NAME.matcher(name).matches();
     }
 
     private Path downloadAndCacheUrlImage(String urlStr) throws Exception {
