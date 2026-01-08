@@ -135,6 +135,19 @@ public class MapManager implements FineMapsAPI {
         return database.createMap(pluginId, null, pixels, null, 0, 0, 0, null);
     }
 
+    /**
+     * Creates a map directly from raw 128x128 pixel bytes with an optional art name.
+     * Intended for import workflows (e.g. importing vanilla maps).
+     *
+     * @param pluginId The plugin ID namespace
+     * @param pixels The pixel data (128x128 = 16384 bytes)
+     * @param artName Optional art name to store as metadata
+     * @return CompletableFuture containing the created map
+     */
+    public CompletableFuture<StoredMap> createMapWithName(String pluginId, byte[] pixels, String artName) {
+        return database.createMap(pluginId, null, pixels, null, 0, 0, 0, artName);
+    }
+
     @Override
     public CompletableFuture<StoredMap> createMapFromImage(String pluginId, BufferedImage image, boolean dither) {
         byte[] pixels = imageProcessor.processSingleMap(image, dither);
