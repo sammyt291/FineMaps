@@ -29,13 +29,50 @@ public class MultiBlockMapHandler {
     private final Plugin plugin;
     private final MapManager mapManager;
     
+    /**
+     * We must distinguish between the "art identity" (groupId) and a particular placed copy in the world.
+     *
+     * Multiple copies of the same art (same groupId) can be placed; breaking one should only break that copy.
+     * Therefore, we track each placement by a unique instanceId.
+     */
+    private static final class PlacementInfo {
+        final long instanceId;
+        final long groupId;
+        final PlacementMode mode;
+        PlacementInfo(long instanceId, long groupId, PlacementMode mode) {
+            this.instanceId = instanceId;
+            this.groupId = groupId;
+            this.mode = mode;
+        }
+    }
+
+    private enum PlacementMode {
+        /** FineMaps spawned the item frames; when broken we remove frames and drop only the map item. */
+        SPAWNED_FRAMES((byte) 1),
+        /** Player provided the item frames; when broken we clear maps and keep frames in-place. */
+        EXISTING_FRAMES((byte) 2);
+
+        final byte id;
+        PlacementMode(byte id) {
+            this.id = id;
+        }
+
+        static PlacementMode fromId(Byte b) {
+            if (b == null) return SPAWNED_FRAMES;
+            if (b == 2) return EXISTING_FRAMES;
+            return SPAWNED_FRAMES;
+        }
+    }
+
     // Track placed multi-block maps in the world
-    // Key: "world:x:y:z" -> group ID
-    private final Map<String, Long> placedMaps = new ConcurrentHashMap<>();
-    
-    // Track all blocks in a multi-block map
-    // Key: group ID -> list of block locations
-    private final Map<Long, Set<String>> groupBlocks = new ConcurrentHashMap<>();
+    // Key: "world:x:y:z" -> placement info (instanceId + groupId + mode)
+    private final Map<String, PlacementInfo> placedMaps = new ConcurrentHashMap<>();
+
+    // Track all blocks in a multi-block placement instance
+    // Key: instanceId -> set of block location keys
+    private final Map<Long, Set<String>> instanceBlocks = new ConcurrentHashMap<>();
+    private final Map<Long, Long> instanceToGroup = new ConcurrentHashMap<>();
+    private final Map<Long, PlacementMode> instanceToMode = new ConcurrentHashMap<>();
     
     // Track preview tasks per player
     private final Map<UUID, BukkitTask> playerPreviewTasks = new ConcurrentHashMap<>();
@@ -56,6 +93,8 @@ public class MultiBlockMapHandler {
     private final NamespacedKey gridPositionKey;
     private final NamespacedKey placedKey;
     private final NamespacedKey singleMapIdKey;
+    private final NamespacedKey instanceIdKey;
+    private final NamespacedKey placementModeKey;
     
     // Preview particle colors - using Particle.DustOptions if available
     private Object validPreviewDust;
@@ -70,6 +109,8 @@ public class MultiBlockMapHandler {
         this.gridPositionKey = new NamespacedKey(plugin, "finemaps_grid");
         this.placedKey = new NamespacedKey(plugin, "finemaps_placed");
         this.singleMapIdKey = new NamespacedKey(plugin, "finemaps_map");
+        this.instanceIdKey = new NamespacedKey(plugin, "finemaps_instance");
+        this.placementModeKey = new NamespacedKey(plugin, "finemaps_place_mode");
         
         // Check if block displays are supported (prefer them over particles)
         this.useBlockDisplays = mapManager.getNmsAdapter().supportsBlockDisplays();
@@ -680,6 +721,7 @@ public class MultiBlockMapHandler {
             
             player.sendMessage(ChatColor.GREEN + "Map placed!");
             stopPreviewTask(player);
+            restartPreviewNextTick(player);
         }
         
         return success;
@@ -722,8 +764,130 @@ public class MultiBlockMapHandler {
 
             player.sendMessage(ChatColor.GREEN + "Map placed!");
             stopPreviewTask(player);
+            restartPreviewNextTick(player);
         }
         return success;
+    }
+
+    /**
+     * Places a multi-block map into an existing grid of item frames starting from the clicked frame.
+     * If there are not enough frames (or they are occupied), placement fails and nothing changes.
+     *
+     * Frames are left behind when the map is broken (PlacementMode.EXISTING_FRAMES).
+     */
+    public boolean tryPlaceMultiBlockMapIntoExistingFrames(Player player, ItemFrame clickedFrame, ItemStack item, EquipmentSlot hand) {
+        if (player == null || clickedFrame == null || item == null) return false;
+        long groupId = mapManager.getGroupIdFromItem(item);
+        if (groupId <= 0) return false;
+
+        ItemStack existing = clickedFrame.getItem();
+        if (existing != null && existing.getType() != Material.AIR) {
+            player.sendMessage(ChatColor.RED + "That item frame is not empty.");
+            return false;
+        }
+
+        Optional<MultiBlockMap> optMap = mapManager.getMultiBlockMap(groupId).join();
+        if (!optMap.isPresent()) {
+            player.sendMessage(ChatColor.RED + "Map group not found.");
+            return false;
+        }
+        MultiBlockMap multiMap = optMap.get();
+
+        int width = mapManager.getMultiBlockWidth(item);
+        int height = mapManager.getMultiBlockHeight(item);
+        // Trust DB dimensions if the item is missing them.
+        if (width <= 0) width = multiMap.getWidth();
+        if (height <= 0) height = multiMap.getHeight();
+
+        BlockFace facing = clickedFrame.getFacing();
+        Location anchor = clickedFrame.getLocation();
+        PlacementGeometry placement = calculatePlacementGeometry(player, anchor, facing, width, height);
+        if (placement == null) {
+            player.sendMessage(ChatColor.RED + "Cannot place map here.");
+            return false;
+        }
+
+        // Validate the required frames exist and are empty.
+        Map<String, ItemFrame> framesByGrid = new HashMap<>();
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                Location loc = placement.locationAt(x, y);
+                ItemFrame frame = findFrameAt(loc, facing);
+                if (frame == null) {
+                    player.sendMessage(ChatColor.RED + "Not enough item frames to place this map (" + width + "x" + height + ").");
+                    return false;
+                }
+                ItemStack fi = frame.getItem();
+                if (fi != null && fi.getType() != Material.AIR) {
+                    player.sendMessage(ChatColor.RED + "An item frame in the placement area is not empty.");
+                    return false;
+                }
+                framesByGrid.put(x + ":" + y, frame);
+            }
+        }
+
+        long instanceId = newInstanceId();
+        instanceToGroup.put(instanceId, groupId);
+        instanceToMode.put(instanceId, PlacementMode.EXISTING_FRAMES);
+
+        Rotation floorCeilingRotation = null;
+        if (facing == BlockFace.UP || facing == BlockFace.DOWN) {
+            BlockFace desiredUp = getHorizontalFacing(player.getLocation().getYaw());
+            floorCeilingRotation = rotationForFloorCeiling(desiredUp, facing == BlockFace.DOWN);
+        }
+
+        World world = clickedFrame.getWorld();
+        Collection<Player> nearbyPlayers = world.getNearbyEntities(clickedFrame.getLocation(), 64, 64, 64).stream()
+            .filter(e -> e instanceof Player)
+            .map(e -> (Player) e)
+            .collect(java.util.stream.Collectors.toList());
+
+        // Apply items to frames.
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                StoredMap map = multiMap.getMapAt(x, y);
+                if (map == null) continue;
+
+                ItemFrame frame = framesByGrid.get(x + ":" + y);
+                if (frame == null) continue;
+
+                ItemStack mapItem = mapManager.createMapItem(map.getId());
+                ItemMeta meta = mapItem.getItemMeta();
+                if (meta != null) {
+                    PersistentDataContainer pdc = meta.getPersistentDataContainer();
+                    pdc.set(groupIdKey, PersistentDataType.LONG, groupId);
+                    pdc.set(gridPositionKey, PersistentDataType.STRING, x + ":" + y);
+                    pdc.set(instanceIdKey, PersistentDataType.LONG, instanceId);
+                    mapItem.setItemMeta(meta);
+                }
+
+                frame.setItem(mapItem);
+
+                if (floorCeilingRotation != null) {
+                    try {
+                        frame.setRotation(floorCeilingRotation);
+                    } catch (Throwable ignored) {
+                    }
+                    try {
+                        frame.setRotation(floorCeilingRotation);
+                    } catch (Throwable ignored) {
+                    }
+                }
+
+                recordPlacementAt(frame, groupId, instanceId, PlacementMode.EXISTING_FRAMES, x + ":" + y);
+
+                for (Player nearbyPlayer : nearbyPlayers) {
+                    mapManager.sendMapToPlayer(nearbyPlayer, map.getId());
+                }
+            }
+        }
+
+        // Consume one item from the correct hand.
+        consumeFromHand(player, item, hand);
+        stopPreviewTask(player);
+        restartPreviewNextTick(player);
+        player.sendMessage(ChatColor.GREEN + "Map placed into item frames!");
+        return true;
     }
 
     private void consumeFromHand(Player player, ItemStack item, EquipmentSlot hand) {
@@ -742,6 +906,24 @@ public class MultiBlockMapHandler {
                 player.getInventory().setItemInMainHand(null);
             }
         }
+    }
+
+    private void restartPreviewNextTick(Player player) {
+        if (player == null) return;
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+            try {
+                if (!player.isOnline()) return;
+                ItemStack main = player.getInventory().getItemInMainHand();
+                ItemStack off = player.getInventory().getItemInOffHand();
+                boolean holdingStored =
+                    (main != null && mapManager.isStoredMap(main)) ||
+                    (off != null && mapManager.isStoredMap(off));
+                if (holdingStored) {
+                    startPreviewTask(player);
+                }
+            } catch (Throwable ignored) {
+            }
+        }, 1L);
     }
 
     private boolean tryPlaceSingleMap(Player player, long mapId) {
@@ -875,14 +1057,11 @@ public class MultiBlockMapHandler {
         if (groupId <= 0) {
             return; // Not a multi-block map
         }
-        
-        String locKey = getLocationKey(itemFrame.getLocation());
-        placedMaps.put(locKey, groupId);
-        groupBlocks.computeIfAbsent(groupId, k -> new HashSet<>()).add(locKey);
-        
-        // Store group info on the item frame entity
-        PersistentDataContainer pdc = itemFrame.getPersistentDataContainer();
-        pdc.set(groupIdKey, PersistentDataType.LONG, groupId);
+
+        // This hook is for "manual placement into an existing frame".
+        // Treat each frame as its own instance unless the placement system groups them.
+        long instanceId = newInstanceId();
+        recordPlacementAt(itemFrame, groupId, instanceId, PlacementMode.EXISTING_FRAMES, "0:0");
     }
 
     /**
@@ -894,43 +1073,68 @@ public class MultiBlockMapHandler {
      * @return true if this was a multi-block map and was handled
      */
     public boolean onMapBreak(ItemFrame itemFrame, Player player) {
-        // First check PDC on the item frame itself
         PersistentDataContainer framePdc = itemFrame.getPersistentDataContainer();
+
+        // Prefer instance id (correctly distinguishes multiple copies).
+        Long instanceId = framePdc.get(instanceIdKey, PersistentDataType.LONG);
+        PlacementMode mode = PlacementMode.fromId(framePdc.get(placementModeKey, PersistentDataType.BYTE));
+
+        // Determine groupId (art identity) from frame, item, or tracking.
         Long groupId = framePdc.get(groupIdKey, PersistentDataType.LONG);
-        
-        // If not on frame, check the item inside
         if (groupId == null || groupId <= 0) {
             ItemStack frameItem = itemFrame.getItem();
             if (frameItem != null) {
                 groupId = mapManager.getGroupIdFromItem(frameItem);
+                if ((instanceId == null || instanceId <= 0) && frameItem.hasItemMeta() && frameItem.getItemMeta() != null) {
+                    Long itemInstance = frameItem.getItemMeta().getPersistentDataContainer().get(instanceIdKey, PersistentDataType.LONG);
+                    if (itemInstance != null && itemInstance > 0) {
+                        instanceId = itemInstance;
+                    }
+                }
             }
         }
-        
-        // If still not found, check by location in our tracking map
-        if (groupId == null || groupId <= 0) {
+
+        // Fallback: location lookup (only works for current-session tracking).
+        if ((instanceId == null || instanceId <= 0) || (groupId == null || groupId <= 0)) {
             String locKey = getLocationKey(itemFrame.getLocation());
-            groupId = placedMaps.get(locKey);
+            PlacementInfo info = placedMaps.get(locKey);
+            if (info != null) {
+                if (instanceId == null || instanceId <= 0) instanceId = info.instanceId;
+                if (groupId == null || groupId <= 0) groupId = info.groupId;
+                mode = info.mode != null ? info.mode : mode;
+            }
         }
-        
+
         if (groupId == null || groupId <= 0) {
             return false; // Not a multi-block map
         }
-        
-        // Break all connected frames
-        breakMultiBlockMap(groupId, itemFrame.getLocation(), player);
+
+        // Break only this placement instance.
+        if (instanceId == null || instanceId <= 0) {
+            // Backward-compat fallback (old worlds): compute a connected component near the origin frame
+            // so we don't destroy all copies of the same groupId.
+            breakMultiBlockMapComponentFallback(groupId, itemFrame, player);
+            return true;
+        }
+
+        breakMultiBlockMapInstance(instanceId, groupId, mode, itemFrame.getLocation(), player);
         return true;
     }
 
     /**
-     * Breaks all item frames in a multi-block map group.
+     * Breaks all item frames in a multi-block placement instance.
      *
-     * @param groupId The group ID
+     * @param instanceId The placement instance id
+     * @param groupId The art group id
+     * @param mode Placement mode (spawned frames vs existing frames)
      * @param originLocation The location where breaking started
      * @param player The player (for drops)
      */
-    private void breakMultiBlockMap(long groupId, Location originLocation, Player player) {
-        Set<String> blocks = groupBlocks.remove(groupId);
-        
+    private void breakMultiBlockMapInstance(long instanceId, long groupId, PlacementMode mode, Location originLocation, Player player) {
+        Set<String> blocks = instanceBlocks.remove(instanceId);
+        instanceToGroup.remove(instanceId);
+        instanceToMode.remove(instanceId);
+
         World world = originLocation.getWorld();
         if (world == null) return;
         
@@ -955,9 +1159,8 @@ public class MultiBlockMapHandler {
                         if (fl.getBlockX() != loc.getBlockX() || fl.getBlockY() != loc.getBlockY() || fl.getBlockZ() != loc.getBlockZ()) {
                             continue;
                         }
-                        // Critical: only remove frames that actually belong to this group.
-                        // Nearby-entity queries can include edge-adjacent frames depending on hitboxes.
-                        if (isFrameInMultiBlockGroup(frame, groupId)) {
+                        // Critical: only handle frames that belong to this placement instance.
+                        if (isFrameInPlacementInstance(frame, instanceId, groupId)) {
                             framesToRemove.add(frame);
                         }
                     }
@@ -965,32 +1168,18 @@ public class MultiBlockMapHandler {
             }
         }
         
-        // Also scan nearby area for any frames with this group ID that we might have missed
-        for (Entity entity : world.getNearbyEntities(originLocation, 32, 32, 32)) {
+        // Also scan nearby area for any frames with this instance id that we might have missed
+        // (handles server restarts where in-memory tracking is empty).
+        for (Entity entity : world.getNearbyEntities(originLocation, 64, 64, 64)) {
             if (entity instanceof ItemFrame) {
                 ItemFrame frame = (ItemFrame) entity;
-                
-                // Check frame's PDC
-                PersistentDataContainer framePdc = frame.getPersistentDataContainer();
-                Long frameGroupId = framePdc.get(groupIdKey, PersistentDataType.LONG);
-                
-                if (frameGroupId != null && frameGroupId == groupId) {
+                if (isFrameInPlacementInstance(frame, instanceId, groupId)) {
                     framesToRemove.add(frame);
-                    continue;
-                }
-                
-                // Check item's PDC
-                ItemStack frameItem = frame.getItem();
-                if (frameItem != null) {
-                    long itemGroupId = mapManager.getGroupIdFromItem(frameItem);
-                    if (itemGroupId == groupId) {
-                        framesToRemove.add(frame);
-                    }
                 }
             }
         }
         
-        // Now remove all the frames
+        // Now handle all the frames
         for (ItemFrame frame : framesToRemove) {
             // Remove tracking
             String locKey = getLocationKey(frame.getLocation());
@@ -998,11 +1187,15 @@ public class MultiBlockMapHandler {
             
             // Get item for potential drop
             ItemStack item = frame.getItem();
-            
-            // Remove the item and frame
+
+            // Remove maps (and optionally the frames themselves)
             frame.setItem(null);
-            frame.remove();
-            
+            clearFramePlacementMarkers(frame);
+
+            if (mode == PlacementMode.SPAWNED_FRAMES) {
+                frame.remove();
+            }
+
             // Drop only one item for the whole multi-block map
             if (!droppedItem && item != null && item.getType() != Material.AIR) {
                 ItemStack dropItem = createMultiBlockDropItem(groupId);
@@ -1023,19 +1216,16 @@ public class MultiBlockMapHandler {
     }
 
     /**
-     * Returns true if the given item frame is part of the specified multi-block group.
-     *
-     * We check both:
-     * - Entity persistent data (set when FineMaps spawns the frame)
-     * - The item-in-frame metadata (backup for older/edge cases)
+     * Returns true if the given item frame is part of the specified placement instance.
      */
-    private boolean isFrameInMultiBlockGroup(ItemFrame frame, long groupId) {
-        if (frame == null || groupId <= 0) return false;
+    private boolean isFrameInPlacementInstance(ItemFrame frame, long instanceId, long groupId) {
+        if (frame == null || instanceId <= 0 || groupId <= 0) return false;
 
         try {
             PersistentDataContainer framePdc = frame.getPersistentDataContainer();
             Long frameGroupId = framePdc.get(groupIdKey, PersistentDataType.LONG);
-            if (frameGroupId != null && frameGroupId == groupId) {
+            Long frameInstanceId = framePdc.get(instanceIdKey, PersistentDataType.LONG);
+            if (frameGroupId != null && frameGroupId == groupId && frameInstanceId != null && frameInstanceId == instanceId) {
                 return true;
             }
         } catch (Throwable ignored) {
@@ -1044,7 +1234,10 @@ public class MultiBlockMapHandler {
 
         ItemStack item = frame.getItem();
         if (item == null) return false;
-        return mapManager.getGroupIdFromItem(item) == groupId;
+        if (mapManager.getGroupIdFromItem(item) != groupId) return false;
+        if (!item.hasItemMeta() || item.getItemMeta() == null) return false;
+        Long itemInstanceId = item.getItemMeta().getPersistentDataContainer().get(instanceIdKey, PersistentDataType.LONG);
+        return itemInstanceId != null && itemInstanceId == instanceId;
     }
 
     /**
@@ -1120,8 +1313,8 @@ public class MultiBlockMapHandler {
      * @return The group ID, or -1 if not found
      */
     public long getGroupIdAt(Location location) {
-        Long groupId = placedMaps.get(getLocationKey(location));
-        return groupId != null ? groupId : -1;
+        PlacementInfo info = placedMaps.get(getLocationKey(location));
+        return info != null ? info.groupId : -1;
     }
 
     /**
@@ -1208,6 +1401,10 @@ public class MultiBlockMapHandler {
             floorCeilingRotation = rotationForFloorCeiling(desiredUp, facing == BlockFace.DOWN);
         }
 
+        long instanceId = newInstanceId();
+        instanceToGroup.put(instanceId, groupId);
+        instanceToMode.put(instanceId, PlacementMode.SPAWNED_FRAMES);
+
         for (int y = 0; y < multiMap.getHeight(); y++) {
             for (int x = 0; x < multiMap.getWidth(); x++) {
                 StoredMap map = multiMap.getMapAt(x, y);
@@ -1232,6 +1429,7 @@ public class MultiBlockMapHandler {
                     PersistentDataContainer pdc = meta.getPersistentDataContainer();
                     pdc.set(groupIdKey, PersistentDataType.LONG, groupId);
                     pdc.set(gridPositionKey, PersistentDataType.STRING, x + ":" + y);
+                    pdc.set(instanceIdKey, PersistentDataType.LONG, instanceId);
                     mapItem.setItemMeta(meta);
                 }
                 frame.setItem(mapItem);
@@ -1251,15 +1449,9 @@ public class MultiBlockMapHandler {
                     }
                 }
                 
-                // Track placement
-                String locKey = getLocationKey(loc);
-                placedMaps.put(locKey, groupId);
-                groupBlocks.computeIfAbsent(groupId, k -> new HashSet<>()).add(locKey);
-                
-                // Store group ID on the entity's PDC
+                // Store placement markers on the entity PDC and track placement
                 PersistentDataContainer framePdc = frame.getPersistentDataContainer();
-                framePdc.set(groupIdKey, PersistentDataType.LONG, groupId);
-                framePdc.set(gridPositionKey, PersistentDataType.STRING, x + ":" + y);
+                recordPlacementAt(frame, groupId, instanceId, PlacementMode.SPAWNED_FRAMES, x + ":" + y);
                 
                 // Send map data to nearby players so it renders immediately
                 for (Player nearbyPlayer : nearbyPlayers) {
@@ -1416,6 +1608,122 @@ public class MultiBlockMapHandler {
      */
     public void clear() {
         placedMaps.clear();
-        groupBlocks.clear();
+        instanceBlocks.clear();
+        instanceToGroup.clear();
+        instanceToMode.clear();
+    }
+
+    private long newInstanceId() {
+        long id;
+        do {
+            id = java.util.concurrent.ThreadLocalRandom.current().nextLong(Long.MAX_VALUE);
+        } while (id <= 0);
+        return id;
+    }
+
+    private void recordPlacementAt(ItemFrame frame, long groupId, long instanceId, PlacementMode mode, String grid) {
+        if (frame == null) return;
+        Location loc = frame.getLocation();
+        String locKey = getLocationKey(loc);
+        placedMaps.put(locKey, new PlacementInfo(instanceId, groupId, mode));
+        instanceBlocks.computeIfAbsent(instanceId, k -> new HashSet<>()).add(locKey);
+        instanceToGroup.put(instanceId, groupId);
+        instanceToMode.put(instanceId, mode);
+
+        PersistentDataContainer framePdc = frame.getPersistentDataContainer();
+        framePdc.set(groupIdKey, PersistentDataType.LONG, groupId);
+        framePdc.set(instanceIdKey, PersistentDataType.LONG, instanceId);
+        framePdc.set(placementModeKey, PersistentDataType.BYTE, mode.id);
+        if (grid != null) {
+            framePdc.set(gridPositionKey, PersistentDataType.STRING, grid);
+        }
+    }
+
+    private void clearFramePlacementMarkers(ItemFrame frame) {
+        if (frame == null) return;
+        try {
+            PersistentDataContainer pdc = frame.getPersistentDataContainer();
+            pdc.remove(groupIdKey);
+            pdc.remove(gridPositionKey);
+            pdc.remove(instanceIdKey);
+            pdc.remove(placementModeKey);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * Backward-compat: old placements used only groupId, so multiple copies could not be distinguished.
+     * We compute a connected component starting from the broken frame based on adjacency + facing.
+     */
+    private void breakMultiBlockMapComponentFallback(long groupId, ItemFrame origin, Player player) {
+        if (origin == null) return;
+        World world = origin.getWorld();
+        if (world == null) return;
+        BlockFace facing = origin.getFacing();
+
+        // BFS in block-space across adjacent frames that match groupId + facing.
+        Set<String> visited = new HashSet<>();
+        ArrayDeque<Location> queue = new ArrayDeque<>();
+        Location originLoc = origin.getLocation();
+        queue.add(originLoc);
+
+        while (!queue.isEmpty()) {
+            Location loc = queue.poll();
+            String key = getLocationKey(loc);
+            if (!visited.add(key)) continue;
+
+            // Explore 4-neighborhood in the plane (X/Z and Y for walls, X/Z for floor/ceiling).
+            for (Location n : neighborsInPlane(loc, facing)) {
+                String nk = getLocationKey(n);
+                if (visited.contains(nk)) continue;
+                ItemFrame frame = findFrameAt(n, facing);
+                if (frame == null) continue;
+                ItemStack item = frame.getItem();
+                if (item == null || mapManager.getGroupIdFromItem(item) != groupId) continue;
+                queue.add(n);
+            }
+        }
+
+        // Create a temporary instance and break it like a spawned-frame placement (historical behavior).
+        long instanceId = newInstanceId();
+        for (String key : visited) {
+            placedMaps.put(key, new PlacementInfo(instanceId, groupId, PlacementMode.SPAWNED_FRAMES));
+        }
+        instanceBlocks.put(instanceId, visited);
+        breakMultiBlockMapInstance(instanceId, groupId, PlacementMode.SPAWNED_FRAMES, originLoc, player);
+    }
+
+    private List<Location> neighborsInPlane(Location loc, BlockFace facing) {
+        List<Location> out = new ArrayList<>(4);
+        if (loc == null) return out;
+        if (facing == BlockFace.UP || facing == BlockFace.DOWN) {
+            // Floor/ceiling frames: plane is X/Z
+            out.add(loc.clone().add(1, 0, 0));
+            out.add(loc.clone().add(-1, 0, 0));
+            out.add(loc.clone().add(0, 0, 1));
+            out.add(loc.clone().add(0, 0, -1));
+            return out;
+        }
+        // Wall frames: plane is X/Y or Z/Y depending on facing
+        out.add(loc.clone().add(0, 1, 0));
+        out.add(loc.clone().add(0, -1, 0));
+        out.add(loc.clone().add(1, 0, 0));
+        out.add(loc.clone().add(-1, 0, 0));
+        out.add(loc.clone().add(0, 0, 1));
+        out.add(loc.clone().add(0, 0, -1));
+        return out;
+    }
+
+    private ItemFrame findFrameAt(Location loc, BlockFace facing) {
+        if (loc == null || loc.getWorld() == null) return null;
+        for (Entity entity : loc.getWorld().getNearbyEntities(loc.clone().add(0.5, 0.5, 0.5), 0.6, 0.6, 0.6)) {
+            if (!(entity instanceof ItemFrame)) continue;
+            ItemFrame frame = (ItemFrame) entity;
+            Location fl = frame.getLocation();
+            if (fl.getBlockX() != loc.getBlockX() || fl.getBlockY() != loc.getBlockY() || fl.getBlockZ() != loc.getBlockZ()) continue;
+            if (facing != null && frame.getFacing() != facing) continue;
+            return frame;
+        }
+        return null;
     }
 }

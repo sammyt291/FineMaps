@@ -19,6 +19,7 @@ import com.example.finemaps.plugin.listener.PlayerListener;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.plugin.RegisteredServiceProvider;
 import redempt.redlib.config.ConfigManager;
 
 import java.io.File;
@@ -26,6 +27,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
+
+import net.milkbowl.vault.economy.Economy;
 
 /**
  * Main plugin class for FineMaps.
@@ -46,6 +49,7 @@ public class FineMapsPlugin extends JavaPlugin {
     private MapManager mapManager;
     private MultiBlockMapHandler multiBlockHandler;
     private ConfigManager configManager;
+    private Economy economy;
     private final Set<UUID> debugPlayers = ConcurrentHashMap.newKeySet();
 
     @Override
@@ -88,6 +92,9 @@ public class FineMapsPlugin extends JavaPlugin {
         // Initialize managers
         mapManager = new MapManager(this, config, database, nmsAdapter);
         multiBlockHandler = new MultiBlockMapHandler(this, mapManager);
+
+        // Hook Vault (optional, only used if enabled in config)
+        setupEconomy();
         
         // Register API
         FineMapsAPIProvider.register(mapManager);
@@ -179,6 +186,33 @@ public class FineMapsPlugin extends JavaPlugin {
         }
     }
 
+    private void setupEconomy() {
+        economy = null;
+        try {
+            if (config == null || config.getEconomy() == null || !config.getEconomy().isEnabled()) {
+                return;
+            }
+
+            if (getServer().getPluginManager().getPlugin("Vault") == null) {
+                getLogger().warning("Economy is enabled in config, but Vault is not installed. Disabling economy features.");
+                return;
+            }
+
+            RegisteredServiceProvider<Economy> rsp = getServer().getServicesManager().getRegistration(Economy.class);
+            if (rsp == null) {
+                getLogger().warning("Economy is enabled in config, but no Vault economy provider was found. Disabling economy features.");
+                return;
+            }
+            economy = rsp.getProvider();
+            if (economy != null) {
+                getLogger().info("Vault economy hooked: " + economy.getName());
+            }
+        } catch (Throwable t) {
+            getLogger().log(Level.WARNING, "Failed to hook Vault economy", t);
+            economy = null;
+        }
+    }
+
     private boolean initializeDatabase() {
         try {
             if (config.getDatabase().isMySQL()) {
@@ -263,6 +297,33 @@ public class FineMapsPlugin extends JavaPlugin {
      */
     public FineMapsConfig getFineMapsConfig() {
         return config;
+    }
+
+    public ConfigManager getConfigManager() {
+        return configManager;
+    }
+
+    public void reloadFineMapsConfiguration() {
+        try {
+            if (configManager != null) {
+                configManager.reload();
+            } else {
+                loadConfiguration();
+            }
+        } catch (Exception e) {
+            getLogger().log(Level.WARNING, "Failed to reload config via RedLib, using defaults", e);
+            loadConfiguration();
+        }
+        // Re-evaluate economy hook in case config changed.
+        setupEconomy();
+    }
+
+    public Economy getEconomy() {
+        return economy;
+    }
+
+    public boolean isEconomyEnabled() {
+        return economy != null && config != null && config.getEconomy() != null && config.getEconomy().isEnabled();
     }
 
     /**

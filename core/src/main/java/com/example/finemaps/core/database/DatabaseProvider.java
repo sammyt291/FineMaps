@@ -3,6 +3,7 @@ package com.example.finemaps.core.database;
 import com.example.finemaps.api.map.MapData;
 import com.example.finemaps.api.map.MultiBlockMap;
 import com.example.finemaps.api.map.StoredMap;
+import com.example.finemaps.api.map.ArtSummary;
 
 import java.util.List;
 import java.util.Optional;
@@ -219,4 +220,15 @@ public interface DatabaseProvider {
      * @return CompletableFuture containing true if name exists
      */
     CompletableFuture<Boolean> isNameTaken(String pluginId, String name);
+
+    /**
+     * Lists named art entries (single maps + multi-block groups) for a plugin.
+     *
+     * - Single maps are returned where group_id = 0 and metadata is the art name.
+     * - Multi-block groups are returned where metadata is the art name.
+     *
+     * @param pluginId The plugin ID namespace
+     * @return CompletableFuture containing list of art entries
+     */
+    CompletableFuture<List<ArtSummary>> getArtSummariesByPlugin(String pluginId);
 }
