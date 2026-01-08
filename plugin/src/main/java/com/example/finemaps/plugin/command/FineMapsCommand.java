@@ -7,8 +7,13 @@ import com.example.finemaps.api.map.ArtSummary;
 import com.example.finemaps.core.config.FineMapsConfig;
 import com.example.finemaps.core.image.ImageProcessor;
 import com.example.finemaps.core.manager.MapManager;
+import com.example.finemaps.core.util.ByteSizeParser;
 import com.example.finemaps.plugin.FineMapsPlugin;
 import com.example.finemaps.plugin.util.VanillaMapDatReader;
+import com.example.finemaps.plugin.url.AnimatedImage;
+import com.example.finemaps.plugin.url.GenericImageDecoder;
+import com.example.finemaps.plugin.url.UrlCache;
+import com.example.finemaps.plugin.url.UrlDownloader;
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -32,8 +37,13 @@ import org.bukkit.inventory.meta.ItemMeta;
 
 import javax.imageio.ImageIO;
 import java.io.File;
+import java.io.IOException;
 import java.awt.image.BufferedImage;
 import java.net.URL;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -112,8 +122,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
     private void sendHelp(CommandSender sender) {
         sender.sendMessage(ChatColor.GOLD + "=== FineMaps Commands ===");
-        sender.sendMessage(ChatColor.YELLOW + "/finemaps url <name> <url> [width] [height] [dither]" + 
-                          ChatColor.GRAY + " - Create map from URL with a name");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps url <url> <name> [w] [h] [raster] [fps]" +
+                          ChatColor.GRAY + " - Create map from URL (supports GIF/APNG/WEBP)");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps convert [mapId] [name]" +
                           ChatColor.GRAY + " - Convert/import a vanilla filled map (held or by id)");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps import [mapId] [name]" +
@@ -951,7 +961,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length < 3) {
-            player.sendMessage(ChatColor.RED + "Usage: /finemaps url <name> <url> [width] [height] [dither]");
+            player.sendMessage(ChatColor.RED + "Usage: /finemaps url <url> <name> [w] [h] [raster] [fps]");
             return true;
         }
 
@@ -962,11 +972,30 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        String artName = args[1];
-        String urlStr = args[2];
+        // New syntax:
+        // /fm url <url> <name> [w] [h] [raster] [fps]
+        // Legacy fallback:
+        // /fm url <name> <url> [w] [h] [dither]
+        String urlStr;
+        String artName;
+
+        if (looksLikeUrl(args[1]) && !looksLikeUrl(args[2])) {
+            urlStr = args[1];
+            artName = args[2];
+        } else if (!looksLikeUrl(args[1]) && looksLikeUrl(args[2])) {
+            // legacy
+            artName = args[1];
+            urlStr = args[2];
+        } else {
+            // default to new order
+            urlStr = args[1];
+            artName = args[2];
+        }
+
         int width = 1;
         int height = 1;
-        boolean dither = config.getImages().isDefaultDither();
+        boolean raster = config.getImages().isDefaultDither();
+        Integer fps = null;
 
         // Validate art name (alphanumeric, underscores, hyphens only)
         if (!artName.matches("^[a-zA-Z0-9_-]+$")) {
@@ -979,7 +1008,10 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        // Parse optional arguments
+        // Parse optional arguments based on whether we're in new or legacy mode
+        boolean legacy = (!looksLikeUrl(args[1]) && looksLikeUrl(args[2]));
+
+        // width
         if (args.length >= 4) {
             try {
                 width = Integer.parseInt(args[3]);
@@ -989,6 +1021,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             }
         }
 
+        // height
         if (args.length >= 5) {
             try {
                 height = Integer.parseInt(args[4]);
@@ -999,7 +1032,16 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length >= 6) {
-            dither = Boolean.parseBoolean(args[5]);
+            raster = parseRasterArg(args[5], config.getImages().isDefaultDither());
+        }
+
+        if (!legacy && args.length >= 7) {
+            try {
+                fps = Integer.parseInt(args[6]);
+            } catch (NumberFormatException e) {
+                player.sendMessage(ChatColor.RED + "Invalid fps: " + args[6]);
+                return true;
+            }
         }
 
         // Validate dimensions
@@ -1030,7 +1072,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         final String finalArtName = artName;
         final int finalWidth = width;
         final int finalHeight = height;
-        final boolean finalDither = dither;
+        final boolean finalRaster = raster;
+        final Integer finalFps = fps;
 
         // Check if name is already taken
         mapManager.isNameTaken("finemaps", artName).thenAccept(taken -> {
@@ -1046,40 +1089,80 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             // Process image asynchronously
             plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
                 try {
-                    BufferedImage image = ImageIO.read(new URL(urlStr));
-                    if (image == null) {
-                        plugin.getServer().getScheduler().runTask(plugin, () -> {
-                            player.sendMessage(ChatColor.RED + "Failed to download image.");
-                        });
-                        return;
+                    // Download (with max-bytes sanity check) and cache original file on disk
+                    Path downloaded = downloadAndCacheUrlImage(urlStr);
+
+                    // Decode static or animated frames
+                    AnimatedImage decoded = GenericImageDecoder.decode(downloaded, urlStr);
+                    if (decoded.frames == null || decoded.frames.isEmpty()) {
+                        throw new IOException("Could not decode image");
                     }
 
-                    // Check image size
+                    // Sanity-check decoded image dimensions
                     int maxSize = config.getPermissions().getMaxImportSize();
-                    if (image.getWidth() > maxSize || image.getHeight() > maxSize) {
-                        plugin.getServer().getScheduler().runTask(plugin, () -> {
-                            player.sendMessage(ChatColor.RED + "Image too large. Max size: " + maxSize + "x" + maxSize);
-                        });
+                    BufferedImage sizeCheck = decoded.frames.get(0);
+                    if (sizeCheck.getWidth() > maxSize || sizeCheck.getHeight() > maxSize) {
+                        throw new IOException("Image too large. Max size: " + maxSize + "x" + maxSize);
+                    }
+
+                    int effectiveFps = (finalFps != null ? finalFps : config.getImages().getDefaultAnimatedFps());
+                    if (effectiveFps <= 0) effectiveFps = config.getImages().getDefaultAnimatedFps();
+
+                    // Precompute map color frames and write them to cache folder
+                    ImageProcessor processor = new ImageProcessor(
+                        config.getImages().getConnectionTimeout(),
+                        config.getImages().getReadTimeout(),
+                        config.getPermissions().getMaxImportSize()
+                    );
+
+                    UrlCacheWriteResult cacheWrite = writeFramesAndColorsToCache(urlStr, downloaded, decoded, finalWidth, finalHeight, finalRaster, effectiveFps, processor);
+
+                    BufferedImage firstFrame = decoded.frames.get(0);
+
+                    if (!decoded.isAnimated()) {
+                        // Create static map(s)
+                        if (finalWidth == 1 && finalHeight == 1) {
+                            mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
+                                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                                    mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
+                                    player.sendMessage(ChatColor.GREEN + "Created map '" + finalArtName + "' from image!");
+                                });
+                            });
+                        } else {
+                            mapManager.createMultiBlockMapWithName("finemaps", firstFrame, finalWidth, finalHeight, finalRaster, finalArtName)
+                                .thenAccept(multiMap -> {
+                                    plugin.getServer().getScheduler().runTask(plugin, () -> {
+                                        mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
+                                        player.sendMessage(ChatColor.GREEN + "Created " + finalWidth + "x" + finalHeight +
+                                                          " map '" + finalArtName + "'!");
+                                    });
+                                });
+                        }
                         return;
                     }
 
-                    // Create map(s)
+                    // Animated: create maps from first frame, then start runtime animation updates
                     if (finalWidth == 1 && finalHeight == 1) {
-                        // Single map - create with metadata (art name)
-                        mapManager.createMapFromImageWithName("finemaps", image, finalDither, finalArtName).thenAccept(map -> {
+                        final int fpsFinal = effectiveFps;
+                        final List<byte[]> pixelFrames = cacheWrite.singleFramesPixels;
+                        mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
+                            plugin.getAnimationRegistry().registerAndStartSingle(finalArtName, map.getId(), fpsFinal, pixelFrames);
                             plugin.getServer().getScheduler().runTask(plugin, () -> {
                                 mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
-                                player.sendMessage(ChatColor.GREEN + "Created map '" + finalArtName + "' from image!");
+                                player.sendMessage(ChatColor.GREEN + "Created animated map '" + finalArtName + "' (" + fpsFinal + " fps, " + pixelFrames.size() + " frames)");
                             });
                         });
                     } else {
-                        // Multi-block map with name stored in group metadata
-                        mapManager.createMultiBlockMapWithName("finemaps", image, finalWidth, finalHeight, finalDither, finalArtName)
+                        final int fpsFinal = effectiveFps;
+                        final List<byte[][]> multiFrames = cacheWrite.multiFramesPixels;
+                        mapManager.createMultiBlockMapWithName("finemaps", firstFrame, finalWidth, finalHeight, finalRaster, finalArtName)
                             .thenAccept(multiMap -> {
+                                List<Long> mapIds = tileOrderMapIds(multiMap, finalWidth, finalHeight);
+                                plugin.getAnimationRegistry().registerAndStartMulti(finalArtName, mapIds, finalWidth, finalHeight, fpsFinal, multiFrames);
                                 plugin.getServer().getScheduler().runTask(plugin, () -> {
                                     mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
-                                    player.sendMessage(ChatColor.GREEN + "Created " + finalWidth + "x" + finalHeight + 
-                                                      " map '" + finalArtName + "'!");
+                                    player.sendMessage(ChatColor.GREEN + "Created animated " + finalWidth + "x" + finalHeight +
+                                                      " map '" + finalArtName + "' (" + fpsFinal + " fps, " + multiFrames.size() + " frames)");
                                 });
                             });
                     }
@@ -1354,7 +1437,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                 return filterStartsWith(args[1], Arrays.asList("get", "set", "reset"));
             }
             if (sub.equals("url") || sub.equals("fromurl")) {
-                return Collections.singletonList("<name>");
+                return Collections.singletonList("<url>");
             }
             if (sub.equals("import") || sub.equals("importvanilla")) {
                 return Arrays.asList("<mapId>", "<name>");
@@ -1389,10 +1472,11 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length >= 3 && (args[0].equalsIgnoreCase("url") || args[0].equalsIgnoreCase("fromurl"))) {
-            if (args.length == 3) return Collections.singletonList("<url>");
-            if (args.length == 4) return Collections.singletonList("<width>");
-            if (args.length == 5) return Collections.singletonList("<height>");
-            if (args.length == 6) return Arrays.asList("true", "false");
+            if (args.length == 3) return Collections.singletonList("<name>");
+            if (args.length == 4) return Collections.singletonList("<w>");
+            if (args.length == 5) return Collections.singletonList("<h>");
+            if (args.length == 6) return Arrays.asList("raster", "noraster", "true", "false");
+            if (args.length == 7) return Collections.singletonList("<fps>");
         }
 
         if (args.length >= 3 && args[0].equalsIgnoreCase("config")) {
@@ -1418,5 +1502,186 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         return options.stream()
             .filter(opt -> opt.toLowerCase().startsWith(lower))
             .collect(Collectors.toList());
+    }
+
+    private boolean looksLikeUrl(String s) {
+        if (s == null) return false;
+        String t = s.toLowerCase(Locale.ROOT);
+        return t.startsWith("http://") || t.startsWith("https://");
+    }
+
+    private boolean parseRasterArg(String raw, boolean defaultVal) {
+        if (raw == null) return defaultVal;
+        String s = raw.trim().toLowerCase(Locale.ROOT);
+        if (s.isEmpty()) return defaultVal;
+        if (s.equals("raster") || s.equals("true") || s.equals("yes") || s.equals("1")) return true;
+        if (s.equals("noraster") || s.equals("false") || s.equals("no") || s.equals("0")) return false;
+        return Boolean.parseBoolean(s);
+    }
+
+    private Path downloadAndCacheUrlImage(String urlStr) throws Exception {
+        URL url = new URL(urlStr);
+        boolean cacheEnabled = config.getImages().isUrlCacheEnabled();
+        long maxBytes = ByteSizeParser.parseToBytes(config.getImages().getMaxUrlDownloadSize());
+
+        Path baseDir;
+        if (cacheEnabled) {
+            baseDir = UrlCache.cacheDirForUrl(plugin.getDataFolder(), config.getImages().getUrlCacheFolder(), urlStr);
+            Files.createDirectories(baseDir);
+
+            // Reuse cached original.* if present
+            try (DirectoryStream<Path> ds = Files.newDirectoryStream(baseDir, "original.*")) {
+                for (Path p : ds) {
+                    if (Files.isRegularFile(p)) return p;
+                }
+            } catch (IOException ignored) {
+            }
+        } else {
+            baseDir = plugin.getDataFolder().toPath().resolve("tmp-url");
+            Files.createDirectories(baseDir);
+        }
+
+        Path tmp = baseDir.resolve("download.tmp");
+        UrlDownloader.DownloadResult res = UrlDownloader.downloadToFile(
+            url,
+            tmp,
+            config.getImages().getConnectionTimeout(),
+            config.getImages().getReadTimeout(),
+            maxBytes
+        );
+
+        String ext = guessExtension(urlStr, res.contentType);
+        Path out = baseDir.resolve("original." + ext);
+        Files.move(tmp, out, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+
+        // Save source URL for debugging
+        try {
+            Files.writeString(baseDir.resolve("source.url.txt"), urlStr);
+        } catch (IOException ignored) {
+        }
+
+        return out;
+    }
+
+    private String guessExtension(String urlStr, String contentType) {
+        String lower = urlStr != null ? urlStr.toLowerCase(Locale.ROOT) : "";
+        String path = lower;
+        int q = path.indexOf('?');
+        if (q >= 0) path = path.substring(0, q);
+        if (path.endsWith(".png") || path.endsWith(".apng")) return "png";
+        if (path.endsWith(".gif")) return "gif";
+        if (path.endsWith(".webp")) return "webp";
+        if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "jpg";
+
+        if (contentType != null) {
+            if (contentType.equals("image/png")) return "png";
+            if (contentType.equals("image/gif")) return "gif";
+            if (contentType.equals("image/webp")) return "webp";
+            if (contentType.equals("image/jpeg")) return "jpg";
+        }
+        return "bin";
+    }
+
+    private static final class UrlCacheWriteResult {
+        final List<byte[]> singleFramesPixels;
+        final List<byte[][]> multiFramesPixels;
+
+        private UrlCacheWriteResult(List<byte[]> singleFramesPixels, List<byte[][]> multiFramesPixels) {
+            this.singleFramesPixels = singleFramesPixels;
+            this.multiFramesPixels = multiFramesPixels;
+        }
+    }
+
+    private UrlCacheWriteResult writeFramesAndColorsToCache(String urlStr,
+                                                            Path originalFile,
+                                                            AnimatedImage decoded,
+                                                            int width,
+                                                            int height,
+                                                            boolean raster,
+                                                            int fps,
+                                                            ImageProcessor processor) throws IOException {
+        Path baseDir = UrlCache.cacheDirForUrl(plugin.getDataFolder(), config.getImages().getUrlCacheFolder(), urlStr);
+        if (!config.getImages().isUrlCacheEnabled()) {
+            baseDir = plugin.getDataFolder().toPath().resolve("tmp-url");
+        }
+
+        Path variantDir = baseDir.resolve(String.format(Locale.ROOT, "variant_%dx%d_r%s_fps%d", width, height, raster ? "1" : "0", fps));
+
+        Path framesDir = variantDir.resolve("frames");
+        Path colorsDir = variantDir.resolve("colors");
+        Files.createDirectories(framesDir);
+        Files.createDirectories(colorsDir);
+
+        // Simple metadata file for debugging
+        try {
+            String meta = "url: " + urlStr + "\n" +
+                "original: " + originalFile.getFileName() + "\n" +
+                "format: " + decoded.format + "\n" +
+                "frames: " + decoded.frames.size() + "\n" +
+                "w: " + width + "\n" +
+                "h: " + height + "\n" +
+                "raster: " + raster + "\n" +
+                "fps: " + fps + "\n";
+            Files.writeString(variantDir.resolve("meta.txt"), meta);
+        } catch (IOException ignored) {
+        }
+
+        List<byte[]> singleFrames = width == 1 && height == 1 ? new ArrayList<>() : null;
+        List<byte[][]> multiFrames = width == 1 && height == 1 ? null : new ArrayList<>();
+
+        for (int i = 0; i < decoded.frames.size(); i++) {
+            BufferedImage frame = decoded.frames.get(i);
+            if (frame == null) continue;
+
+            // Save original-res frame as PNG
+            if (config.getImages().isUrlCacheEnabled()) {
+                File outFrame = framesDir.resolve(String.format(Locale.ROOT, "frame_%04d.png", i)).toFile();
+                try {
+                    ImageIO.write(frame, "png", outFrame);
+                } catch (Exception ignored) {
+                }
+            }
+
+            if (width == 1 && height == 1) {
+                byte[] pixels = processor.processSingleMap(frame, raster);
+                singleFrames.add(pixels);
+                if (config.getImages().isUrlCacheEnabled()) {
+                    Files.write(colorsDir.resolve(String.format(Locale.ROOT, "frame_%04d.bin", i)), pixels);
+                }
+            } else {
+                byte[][] tiles = processor.processImage(frame, width, height, raster);
+                multiFrames.add(tiles);
+                if (config.getImages().isUrlCacheEnabled()) {
+                    // Write concatenated tiles
+                    Path out = colorsDir.resolve(String.format(Locale.ROOT, "frame_%04d.bin", i));
+                    int tileSize = com.example.finemaps.api.map.MapData.TOTAL_PIXELS;
+                    byte[] all = new byte[tiles.length * tileSize];
+                    int off = 0;
+                    for (byte[] t : tiles) {
+                        System.arraycopy(t, 0, all, off, tileSize);
+                        off += tileSize;
+                    }
+                    Files.write(out, all);
+                }
+            }
+        }
+
+        return new UrlCacheWriteResult(singleFrames != null ? singleFrames : new ArrayList<>(),
+            multiFrames != null ? multiFrames : new ArrayList<>());
+    }
+
+    private List<Long> tileOrderMapIds(com.example.finemaps.api.map.MultiBlockMap multiMap, int width, int height) {
+        // Build a [y][x] ordered list from grid coords
+        long[] ids = new long[width * height];
+        Arrays.fill(ids, -1L);
+        for (com.example.finemaps.api.map.StoredMap m : multiMap.getMaps()) {
+            int x = m.getGridX();
+            int y = m.getGridY();
+            if (x < 0 || y < 0 || x >= width || y >= height) continue;
+            ids[y * width + x] = m.getId();
+        }
+        List<Long> out = new ArrayList<>();
+        for (long id : ids) out.add(id);
+        return out;
     }
 }

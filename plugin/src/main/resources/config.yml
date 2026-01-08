@@ -71,6 +71,19 @@ images:
   # Read timeout for URL imports (in milliseconds)
   read-timeout: 30000
 
+  # If true, URL imports will be cached to disk in the plugin folder
+  url-cache-enabled: true
+
+  # Folder (under the plugin data folder) to store URL cache files
+  url-cache-folder: url-cache
+
+  # Maximum allowed download size for a URL import. Supports suffix K, M, or G (no space).
+  # If no suffix is provided, K is assumed.
+  max-url-download-size: 8192K
+
+  # Default FPS for animated image imports (GIF/APNG/WEBP) when not specified in the command
+  default-animated-fps: 20
+
 economy:
   # Enable Vault economy integration (requires Vault + an economy plugin)
   enabled: false

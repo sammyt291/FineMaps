@@ -147,6 +147,18 @@ public class MapManager implements FineMapsAPI {
         mapViewManager.getOrCreateBukkitMapId(dbMapId, pixels);
     }
 
+    /**
+     * Updates a map's pixels in-memory and pushes them to the renderer.
+     * This does NOT persist the new pixels to the database.
+     *
+     * Intended for runtime animation workflows.
+     */
+    public void updateMapPixelsRuntime(long dbMapId, byte[] pixels) {
+        if (pixels == null || pixels.length != MapData.TOTAL_PIXELS) return;
+        mapDataCache.put(dbMapId, new MapData(dbMapId, pixels));
+        mapViewManager.updateMapPixels(dbMapId, pixels);
+    }
+
     @Override
     public CompletableFuture<StoredMap> createMap(String pluginId, byte[] pixels) {
         return database.createMap(pluginId, null, pixels, null, 0, 0, 0, null);

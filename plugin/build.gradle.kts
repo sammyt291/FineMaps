@@ -21,6 +21,10 @@ dependencies {
 
     // Vault API (economy) - provided at runtime (JitPack)
     compileOnly("com.github.MilkBowl:VaultAPI:1.7")
+
+    // ImageIO plugins for additional formats (shaded into the plugin)
+    // - WEBP (including animated WebP when supported by reader)
+    implementation("com.twelvemonkeys.imageio:imageio-webp:3.11.0")
 }
 
 tasks {
@@ -36,6 +40,9 @@ tasks {
     shadowJar {
         archiveBaseName.set("FineMaps")
         archiveClassifier.set("")
+
+        // Needed for ImageIO SPI providers (e.g., WEBP reader) in shaded JARs
+        mergeServiceFiles()
         
         // Relocate shaded dependencies to avoid conflicts
         relocate("com.zaxxer.hikari", "com.example.finemaps.libs.hikari")

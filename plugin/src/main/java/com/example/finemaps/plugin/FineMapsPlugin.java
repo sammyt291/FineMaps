@@ -12,6 +12,7 @@ import com.example.finemaps.api.nms.NMSAdapter;
 import com.example.finemaps.core.nms.NMSAdapterFactory;
 import com.example.finemaps.plugin.command.DebugCommand;
 import com.example.finemaps.plugin.command.FineMapsCommand;
+import com.example.finemaps.plugin.url.AnimationRegistry;
 import com.example.finemaps.plugin.listener.ChunkListener;
 import com.example.finemaps.plugin.listener.ItemFrameListener;
 import com.example.finemaps.plugin.listener.MapInteractListener;
@@ -50,6 +51,7 @@ public class FineMapsPlugin extends JavaPlugin {
     private MultiBlockMapHandler multiBlockHandler;
     private ConfigManager configManager;
     private Economy economy;
+    private AnimationRegistry animationRegistry;
     private final Set<UUID> debugPlayers = ConcurrentHashMap.newKeySet();
 
     @Override
@@ -92,6 +94,7 @@ public class FineMapsPlugin extends JavaPlugin {
         // Initialize managers
         mapManager = new MapManager(this, config, database, nmsAdapter);
         multiBlockHandler = new MultiBlockMapHandler(this, mapManager);
+        animationRegistry = new AnimationRegistry(this, mapManager);
 
         // Hook Vault (optional, only used if enabled in config)
         setupEconomy();
@@ -135,6 +138,11 @@ public class FineMapsPlugin extends JavaPlugin {
         // Unregister API
         FineMapsAPIProvider.unregister();
         
+        // Stop animations before tearing down map systems
+        if (animationRegistry != null) {
+            animationRegistry.stopAll();
+        }
+
         // Shutdown managers
         if (mapManager != null) {
             mapManager.shutdown();
@@ -279,6 +287,10 @@ public class FineMapsPlugin extends JavaPlugin {
      */
     public MapManager getMapManager() {
         return mapManager;
+    }
+
+    public AnimationRegistry getAnimationRegistry() {
+        return animationRegistry;
     }
 
     /**

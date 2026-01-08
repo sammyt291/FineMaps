@@ -256,6 +256,22 @@ public class FineMapsConfig {
         @ConfigName("read-timeout")
         private int readTimeout = 30000;
 
+        @Comment("If true, URL imports will be cached to disk in the plugin folder")
+        @ConfigName("url-cache-enabled")
+        private boolean urlCacheEnabled = true;
+
+        @Comment("Folder (under the plugin data folder) to store URL cache files")
+        @ConfigName("url-cache-folder")
+        private String urlCacheFolder = "url-cache";
+
+        @Comment("Maximum allowed download size for a URL import. Supports suffix K, M, or G (no space). If no suffix is provided, K is assumed.")
+        @ConfigName("max-url-download-size")
+        private String maxUrlDownloadSize = "8192K";
+
+        @Comment("Default FPS for animated image imports (GIF/APNG/WEBP) when not specified in the command")
+        @ConfigName("default-animated-fps")
+        private int defaultAnimatedFps = 20;
+
         public boolean isDefaultDither() {
             return defaultDither;
         }
@@ -274,6 +290,22 @@ public class FineMapsConfig {
 
         public int getReadTimeout() {
             return readTimeout;
+        }
+
+        public boolean isUrlCacheEnabled() {
+            return urlCacheEnabled;
+        }
+
+        public String getUrlCacheFolder() {
+            return urlCacheFolder;
+        }
+
+        public String getMaxUrlDownloadSize() {
+            return maxUrlDownloadSize;
+        }
+
+        public int getDefaultAnimatedFps() {
+            return defaultAnimatedFps;
         }
     }
 
