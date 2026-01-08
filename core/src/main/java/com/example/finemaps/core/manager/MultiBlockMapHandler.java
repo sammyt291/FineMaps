@@ -95,6 +95,9 @@ public class MultiBlockMapHandler {
     private final NamespacedKey singleMapIdKey;
     private final NamespacedKey instanceIdKey;
     private final NamespacedKey placementModeKey;
+    private final NamespacedKey widthKey;
+    private final NamespacedKey heightKey;
+    private final NamespacedKey rotationKey;
     
     // Preview particle colors - using Particle.DustOptions if available
     private Object validPreviewDust;
@@ -111,6 +114,9 @@ public class MultiBlockMapHandler {
         this.singleMapIdKey = new NamespacedKey(plugin, "finemaps_map");
         this.instanceIdKey = new NamespacedKey(plugin, "finemaps_instance");
         this.placementModeKey = new NamespacedKey(plugin, "finemaps_place_mode");
+        this.widthKey = new NamespacedKey(plugin, "finemaps_width");
+        this.heightKey = new NamespacedKey(plugin, "finemaps_height");
+        this.rotationKey = new NamespacedKey(plugin, "finemaps_rotation");
         
         // Check if block displays are supported (prefer them over particles)
         this.useBlockDisplays = mapManager.getNmsAdapter().supportsBlockDisplays();
@@ -698,6 +704,31 @@ public class MultiBlockMapHandler {
         // Get dimensions to calculate proper start location
         int width = mapManager.getMultiBlockWidth(item);
         int height = mapManager.getMultiBlockHeight(item);
+        int rotationDeg = mapManager.getMultiBlockRotationDegrees(item);
+        // If old items are missing stored dimensions, fall back to DB size (and apply rotation).
+        try {
+            if (item.hasItemMeta() && item.getItemMeta() != null) {
+                PersistentDataContainer pdc = item.getItemMeta().getPersistentDataContainer();
+                Integer storedW = pdc.get(widthKey, PersistentDataType.INTEGER);
+                Integer storedH = pdc.get(heightKey, PersistentDataType.INTEGER);
+                if (storedW == null || storedH == null) {
+                    Optional<MultiBlockMap> optMap = mapManager.getMultiBlockMap(groupId).join();
+                    if (optMap.isPresent()) {
+                        int rot = normalizeRotationDegrees(rotationDeg);
+                        int baseW = optMap.get().getWidth();
+                        int baseH = optMap.get().getHeight();
+                        if ((rot % 180) != 0) {
+                            width = baseH;
+                            height = baseW;
+                        } else {
+                            width = baseW;
+                            height = baseH;
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
         
         // Calculate the start location based on the clicked position
         Location clickedLoc = hitBlock.getRelative(hitFace).getLocation();
@@ -708,7 +739,7 @@ public class MultiBlockMapHandler {
         }
         
         // Try to place the map
-        boolean success = placeMultiBlockMap(groupId, placement.startLocation, hitFace, player);
+        boolean success = placeMultiBlockMap(groupId, placement.startLocation, hitFace, player, width, height, rotationDeg);
         
         if (success) {
             // Remove item from player's hand
@@ -795,9 +826,26 @@ public class MultiBlockMapHandler {
 
         int width = mapManager.getMultiBlockWidth(item);
         int height = mapManager.getMultiBlockHeight(item);
+        int rotationDeg = mapManager.getMultiBlockRotationDegrees(item);
         // Trust DB dimensions if the item is missing them.
-        if (width <= 0) width = multiMap.getWidth();
-        if (height <= 0) height = multiMap.getHeight();
+        try {
+            boolean missing = true;
+            if (item.hasItemMeta() && item.getItemMeta() != null) {
+                PersistentDataContainer pdc = item.getItemMeta().getPersistentDataContainer();
+                missing = pdc.get(widthKey, PersistentDataType.INTEGER) == null || pdc.get(heightKey, PersistentDataType.INTEGER) == null;
+            }
+            if (missing || width <= 0 || height <= 0) {
+                int rot = normalizeRotationDegrees(rotationDeg);
+                if ((rot % 180) != 0) {
+                    width = multiMap.getHeight();
+                    height = multiMap.getWidth();
+                } else {
+                    width = multiMap.getWidth();
+                    height = multiMap.getHeight();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
 
         BlockFace facing = clickedFrame.getFacing();
         Location anchor = clickedFrame.getLocation();
@@ -845,7 +893,8 @@ public class MultiBlockMapHandler {
         // Apply items to frames.
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
-                StoredMap map = multiMap.getMapAt(x, y);
+                int[] src = mapCoordsForRotation(rotationDeg, x, y, multiMap.getWidth(), multiMap.getHeight());
+                StoredMap map = (src != null) ? multiMap.getMapAt(src[0], src[1]) : null;
                 if (map == null) continue;
 
                 ItemFrame frame = framesByGrid.get(x + ":" + y);
@@ -858,6 +907,7 @@ public class MultiBlockMapHandler {
                     pdc.set(groupIdKey, PersistentDataType.LONG, groupId);
                     pdc.set(gridPositionKey, PersistentDataType.STRING, x + ":" + y);
                     pdc.set(instanceIdKey, PersistentDataType.LONG, instanceId);
+                    pdc.set(rotationKey, PersistentDataType.INTEGER, normalizeRotationDegrees(rotationDeg));
                     mapItem.setItemMeta(meta);
                 }
 
@@ -874,7 +924,7 @@ public class MultiBlockMapHandler {
                     }
                 }
 
-                recordPlacementAt(frame, groupId, instanceId, PlacementMode.EXISTING_FRAMES, x + ":" + y);
+                recordPlacementAt(frame, groupId, instanceId, PlacementMode.EXISTING_FRAMES, x + ":" + y, rotationDeg);
 
                 for (Player nearbyPlayer : nearbyPlayers) {
                     mapManager.sendMapToPlayer(nearbyPlayer, map.getId());
@@ -1061,7 +1111,7 @@ public class MultiBlockMapHandler {
         // This hook is for "manual placement into an existing frame".
         // Treat each frame as its own instance unless the placement system groups them.
         long instanceId = newInstanceId();
-        recordPlacementAt(itemFrame, groupId, instanceId, PlacementMode.EXISTING_FRAMES, "0:0");
+        recordPlacementAt(itemFrame, groupId, instanceId, PlacementMode.EXISTING_FRAMES, "0:0", 0);
     }
 
     /**
@@ -1139,6 +1189,8 @@ public class MultiBlockMapHandler {
         if (world == null) return;
         
         boolean droppedItem = false;
+        int rotationDeg = 0;
+        boolean rotationKnown = false;
         Set<ItemFrame> framesToRemove = new HashSet<>();
         
         // If we have tracked blocks, use those
@@ -1198,7 +1250,11 @@ public class MultiBlockMapHandler {
 
             // Drop only one item for the whole multi-block map
             if (!droppedItem && item != null && item.getType() != Material.AIR) {
-                ItemStack dropItem = createMultiBlockDropItem(groupId);
+                if (!rotationKnown) {
+                    rotationDeg = readRotationFromFrameOrItem(frame, item);
+                    rotationKnown = true;
+                }
+                ItemStack dropItem = createMultiBlockDropItem(groupId, rotationDeg);
                 if (dropItem != null) {
                     world.dropItemNaturally(originLocation, dropItem);
                     droppedItem = true;
@@ -1208,7 +1264,7 @@ public class MultiBlockMapHandler {
         
         // If nothing was dropped but we should drop something
         if (!droppedItem && !framesToRemove.isEmpty()) {
-            ItemStack dropItem = createMultiBlockDropItem(groupId);
+            ItemStack dropItem = createMultiBlockDropItem(groupId, rotationKnown ? rotationDeg : 0);
             if (dropItem != null) {
                 world.dropItemNaturally(originLocation, dropItem);
             }
@@ -1246,13 +1302,20 @@ public class MultiBlockMapHandler {
      * @param groupId The group ID
      * @return The drop item, or null if group not found
      */
-    private ItemStack createMultiBlockDropItem(long groupId) {
+    private ItemStack createMultiBlockDropItem(long groupId, int rotationDeg) {
         Optional<MultiBlockMap> optMap = mapManager.getMultiBlockMap(groupId).join();
         if (!optMap.isPresent()) {
             return null;
         }
         
         MultiBlockMap multiMap = optMap.get();
+        int rot = normalizeRotationDegrees(rotationDeg);
+        int effectiveW = multiMap.getWidth();
+        int effectiveH = multiMap.getHeight();
+        if ((rot % 180) != 0) {
+            effectiveW = multiMap.getHeight();
+            effectiveH = multiMap.getWidth();
+        }
         
         // Use the first map in the group as the display item
         if (multiMap.getMaps().isEmpty()) {
@@ -1270,8 +1333,9 @@ public class MultiBlockMapHandler {
             // Add group info and dimensions
             PersistentDataContainer pdc = meta.getPersistentDataContainer();
             pdc.set(groupIdKey, PersistentDataType.LONG, groupId);
-            pdc.set(new NamespacedKey(plugin, "finemaps_width"), PersistentDataType.INTEGER, multiMap.getWidth());
-            pdc.set(new NamespacedKey(plugin, "finemaps_height"), PersistentDataType.INTEGER, multiMap.getHeight());
+            pdc.set(widthKey, PersistentDataType.INTEGER, effectiveW);
+            pdc.set(heightKey, PersistentDataType.INTEGER, effectiveH);
+            pdc.set(rotationKey, PersistentDataType.INTEGER, rot);
             
             // Add display name showing art name (size stays in lore)
             String artName = multiMap.getMetadata();
@@ -1282,13 +1346,7 @@ public class MultiBlockMapHandler {
             }
             
             // Add lore with size only (plus usage hints)
-            List<String> lore = new ArrayList<>();
-            lore.add(ChatColor.GRAY + "Size: " + multiMap.getWidth() + "x" + multiMap.getHeight() + " blocks");
-            lore.add("");
-            lore.add(ChatColor.YELLOW + "Look at a wall to see preview");
-            lore.add(ChatColor.YELLOW + "Right-click to place");
-            meta.setLore(lore);
-            mapManager.hideVanillaMapTooltip(meta);
+            mapManager.applyMultiBlockLore(meta, effectiveW, effectiveH, rot, true);
             
             item.setItemMeta(meta);
         }
@@ -1327,6 +1385,11 @@ public class MultiBlockMapHandler {
      * @return true if placed successfully
      */
     public boolean placeMultiBlockMap(long groupId, Location startLocation, BlockFace facing, Player player) {
+        return placeMultiBlockMap(groupId, startLocation, facing, player, -1, -1, 0);
+    }
+
+    public boolean placeMultiBlockMap(long groupId, Location startLocation, BlockFace facing, Player player,
+                                     int effectiveWidth, int effectiveHeight, int rotationDeg) {
         Optional<MultiBlockMap> optMap = mapManager.getMultiBlockMap(groupId).join();
         if (!optMap.isPresent()) {
             return false;
@@ -1335,6 +1398,10 @@ public class MultiBlockMapHandler {
         MultiBlockMap multiMap = optMap.get();
         World world = startLocation.getWorld();
         if (world == null) return false;
+
+        int rot = normalizeRotationDegrees(rotationDeg);
+        int w = effectiveWidth > 0 ? effectiveWidth : multiMap.getWidth();
+        int h = effectiveHeight > 0 ? effectiveHeight : multiMap.getHeight();
         
         // `startLocation` is already the computed top-left for the placement.
         // Do NOT recompute it again (that causes preview/placement mismatches).
@@ -1352,8 +1419,8 @@ public class MultiBlockMapHandler {
         }
         
         // Check if all positions are valid
-        for (int y = 0; y < multiMap.getHeight(); y++) {
-            for (int x = 0; x < multiMap.getWidth(); x++) {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
                 Location loc = placement.locationAt(x, y);
                 Block airBlock = loc.getBlock();
                 Block behindBlock = airBlock.getRelative(facing.getOppositeFace());
@@ -1405,9 +1472,10 @@ public class MultiBlockMapHandler {
         instanceToGroup.put(instanceId, groupId);
         instanceToMode.put(instanceId, PlacementMode.SPAWNED_FRAMES);
 
-        for (int y = 0; y < multiMap.getHeight(); y++) {
-            for (int x = 0; x < multiMap.getWidth(); x++) {
-                StoredMap map = multiMap.getMapAt(x, y);
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int[] src = mapCoordsForRotation(rot, x, y, multiMap.getWidth(), multiMap.getHeight());
+                StoredMap map = (src != null) ? multiMap.getMapAt(src[0], src[1]) : null;
                 if (map == null) continue;
                 
                 Location loc = placement.locationAt(x, y);
@@ -1430,6 +1498,7 @@ public class MultiBlockMapHandler {
                     pdc.set(groupIdKey, PersistentDataType.LONG, groupId);
                     pdc.set(gridPositionKey, PersistentDataType.STRING, x + ":" + y);
                     pdc.set(instanceIdKey, PersistentDataType.LONG, instanceId);
+                    pdc.set(rotationKey, PersistentDataType.INTEGER, rot);
                     mapItem.setItemMeta(meta);
                 }
                 frame.setItem(mapItem);
@@ -1451,7 +1520,7 @@ public class MultiBlockMapHandler {
                 
                 // Store placement markers on the entity PDC and track placement
                 PersistentDataContainer framePdc = frame.getPersistentDataContainer();
-                recordPlacementAt(frame, groupId, instanceId, PlacementMode.SPAWNED_FRAMES, x + ":" + y);
+                recordPlacementAt(frame, groupId, instanceId, PlacementMode.SPAWNED_FRAMES, x + ":" + y, rot);
                 
                 // Send map data to nearby players so it renders immediately
                 for (Player nearbyPlayer : nearbyPlayers) {
@@ -1621,7 +1690,7 @@ public class MultiBlockMapHandler {
         return id;
     }
 
-    private void recordPlacementAt(ItemFrame frame, long groupId, long instanceId, PlacementMode mode, String grid) {
+    private void recordPlacementAt(ItemFrame frame, long groupId, long instanceId, PlacementMode mode, String grid, int rotationDeg) {
         if (frame == null) return;
         Location loc = frame.getLocation();
         String locKey = getLocationKey(loc);
@@ -1634,6 +1703,7 @@ public class MultiBlockMapHandler {
         framePdc.set(groupIdKey, PersistentDataType.LONG, groupId);
         framePdc.set(instanceIdKey, PersistentDataType.LONG, instanceId);
         framePdc.set(placementModeKey, PersistentDataType.BYTE, mode.id);
+        framePdc.set(rotationKey, PersistentDataType.INTEGER, normalizeRotationDegrees(rotationDeg));
         if (grid != null) {
             framePdc.set(gridPositionKey, PersistentDataType.STRING, grid);
         }
@@ -1647,8 +1717,59 @@ public class MultiBlockMapHandler {
             pdc.remove(gridPositionKey);
             pdc.remove(instanceIdKey);
             pdc.remove(placementModeKey);
+            pdc.remove(rotationKey);
         } catch (Throwable ignored) {
         }
+    }
+
+    private int readRotationFromFrameOrItem(ItemFrame frame, ItemStack item) {
+        try {
+            if (frame != null) {
+                PersistentDataContainer fpdc = frame.getPersistentDataContainer();
+                Integer r = fpdc.get(rotationKey, PersistentDataType.INTEGER);
+                if (r != null) return normalizeRotationDegrees(r);
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (item != null && item.hasItemMeta() && item.getItemMeta() != null) {
+                Integer r = item.getItemMeta().getPersistentDataContainer().get(rotationKey, PersistentDataType.INTEGER);
+                if (r != null) return normalizeRotationDegrees(r);
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0;
+    }
+
+    /**
+     * Maps an (x,y) position in the rotated view back to the original (x,y) in the stored multi-map.
+     * Rotation is clockwise in degrees (0/90/180/270).
+     */
+    private int[] mapCoordsForRotation(int rotationDeg, int x, int y, int originalW, int originalH) {
+        int rot = normalizeRotationDegrees(rotationDeg);
+        if (originalW <= 0 || originalH <= 0) return null;
+        switch (rot) {
+            case 0:
+                return new int[]{x, y};
+            case 90:
+                // newW=H, newH=W
+                return new int[]{y, originalH - 1 - x};
+            case 180:
+                return new int[]{originalW - 1 - x, originalH - 1 - y};
+            case 270:
+                // newW=H, newH=W
+                return new int[]{originalW - 1 - y, x};
+            default:
+                return new int[]{x, y};
+        }
+    }
+
+    private int normalizeRotationDegrees(int deg) {
+        int d = deg % 360;
+        if (d < 0) d += 360;
+        d = ((d + 45) / 90) * 90;
+        d = d % 360;
+        return d;
     }
 
     /**
