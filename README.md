@@ -1,68 +1,72 @@
 # FineMaps - Database-Backed Map Storage System
 
-A Minecraft server plugin that stores map pixel and palette data in a database (SQLite or MySQL) with RLE compression, supporting 64-bit map IDs to bypass the vanilla ~32,000 map limit.
+A Minecraft server plugin that stores map pixel data in a database (SQLite or MySQL) with compression, and renders maps via custom MapViews/MapRenderers. FineMaps also supports multi-block “map arts”, URL image imports, vanilla map importing, and optional Vault economy/GUI features.
 
 ## Features
 
-- **Unlimited Maps**: Store maps with 64-bit IDs in a database, far exceeding vanilla's ~32,000 map limit
-- **Database Support**: SQLite (default) or MySQL with RLE + DEFLATE compression
-- **Multi-Version Support**: Works with Spigot, Paper, and Folia from 1.12.2 to 1.21.x
-- **Virtual ID System**: Dynamically assigns vanilla-compatible IDs (0-32000) for rendering
-- **Multi-Block Maps**: Create large images spanning multiple map blocks
-- **Image Import**: Create maps from URLs with automatic resizing and dithering
-- **API for Developers**: Full API for other plugins to store and retrieve maps
-- **Map Preview**: Block displays (1.19.4+) or particle outlines for map preview while holding
-- **Permission-Based Limits**: Configurable per-player/group map creation limits
+- **Database-backed storage**: Store map pixel data in SQLite (default) or MySQL
+- **Compression**: RLE + DEFLATE on stored pixel data
+- **Multi-block map arts**: Create large images split across multiple maps (e.g. 3x2)
+- **URL image import**: Create 1x1 or multi-block arts from an image URL (size limits + allowlist supported)
+- **Vanilla map importing**: Import a vanilla filled map (held or by map id) into FineMaps
+- **Bulk vanilla import**: Import all `map_*.dat` files from one world or all worlds
+- **Art naming + lookup**: Store a short “art name” and retrieve/delete by name
+- **Art browser GUI**: Paginated in-game art browser (optional, configurable)
+- **Vault economy integration**: Optional purchasing via `/finemaps buy` and GUI buying
+- **Map previews**: Particle preview outline, plus optional display-based previews when supported
+- **Permission-based limits**: Global default limit, group limits via `finemaps.limit.<group>`, or unlimited via `finemaps.unlimited`
+- **API for developers**: Create/retrieve maps, create items, and listen for map events
 
 ## Supported Versions
 
 | Minecraft | Status | Notes |
 |-----------|--------|-------|
-| 1.21.x | ✅ Full Support | Includes Folia support |
-| 1.20.x | ✅ Full Support | Block displays available |
-| 1.19.4+ | ✅ Full Support | Block displays available |
-| 1.19.x | ✅ Full Support | Particle previews |
-| 1.18.x | ✅ Full Support | Particle previews |
-| 1.17.x | ✅ Full Support | Particle previews |
-| 1.16.x | ✅ Full Support | Particle previews |
-| 1.13-1.15 | ✅ Full Support | Particle previews |
-| 1.12.2 | ✅ Full Support | Legacy map system |
+| 1.21.x | ✅ Supported | Folia supported (`folia-supported: true`) |
+| 1.20.x | ✅ Supported |  |
+| 1.19.4+ | ✅ Supported | Display entities available, particle preview still supported |
+| 1.19.0–1.19.3 | ✅ Supported | Particle previews |
+| 1.18.x | ✅ Supported | Particle previews |
+| 1.17.x | ✅ Supported | Particle previews |
+| 1.16.x | ✅ Supported | Particle previews |
+| 1.15.x | ✅ Supported | Particle previews |
+| 1.14.x | ✅ Supported | Minimum supported version |
 
 ## Requirements
 
-- Java 8+ (Java 17+ recommended for 1.18+, Java 21 for 1.21+)
-- Spigot, Paper, or Folia server
-- ProtocolLib (optional - see below)
+- Minecraft server: Spigot/Paper/Folia **1.14+**
+- Java: **8+** (use the server-recommended Java for your MC version; e.g. Java 17 for 1.18+)
+- Optional: ProtocolLib (recommended)
+- Optional: Vault + an economy plugin (for buy/economy features)
 
 ### ProtocolLib Support
 
-ProtocolLib is **optional**. When present, FineMaps can use packet interception for enhanced/advanced rendering features. Without ProtocolLib, FineMaps runs in “Bukkit mode” (no packet interception) and still supports database-backed maps normally.
+ProtocolLib is **optional**. FineMaps works without it using Bukkit `MapView` + `MapRenderer`. When ProtocolLib is present, FineMaps can use packet-based map sending capabilities provided by the ProtocolLib-backed adapter.
 
 | Feature | With ProtocolLib | Without ProtocolLib |
 |---------|------------------|---------------------|
-| Database Storage | ✅ Unlimited | ✅ Unlimited |
-| Map Packet Interception | ✅ Yes | ❌ No |
-| Multi-Block Maps | ✅ Full | ✅ Full |
-| Image Import | ✅ Full | ✅ Full |
-
-**Without ProtocolLib**: FineMaps will not intercept map packets. Everything else (database storage, creation, multi-block maps, URL import) still works.
+| Database storage | ✅ | ✅ |
+| Map packet interception | ✅ (available) | ❌ |
+| Partial map packets | ✅ | ❌ |
+| Multi-block maps | ✅ | ✅ |
+| URL import | ✅ | ✅ |
 
 ## Installation
 
 1. Download the latest release from the releases page
 2. Place `FineMaps.jar` in your server's `plugins` folder
-3. (Optional) Install ProtocolLib for enhanced rendering features (packet interception)
-4. Restart your server
-5. Configure `plugins/FineMaps/config.yml` as needed
+3. (Optional) Install ProtocolLib (recommended)
+4. (Optional) Install Vault + an economy plugin (if you want `/finemaps buy` and GUI buying)
+5. Restart your server
+6. Configure `plugins/FineMaps/config.yml` as needed
 
 ## Configuration
 
+This is the default `config.yml` shape shipped with the plugin:
+
 ```yaml
-# Database configuration
 database:
   type: sqlite  # or 'mysql'
-  sqlite:
-    file: maps.db
+  sqlite-file: maps.db
   mysql:
     host: localhost
     port: 3306
@@ -71,7 +75,6 @@ database:
     password: ""
     use-ssl: false
 
-# Permission settings
 permissions:
   default-limit: 100  # -1 for unlimited
   group-limits:
@@ -82,7 +85,6 @@ permissions:
   max-import-size: 4096
   allowed-domains: []  # Empty = allow all
 
-# Map settings
 maps:
   max-virtual-ids: 30000
   cleanup-interval: 6000
@@ -90,27 +92,58 @@ maps:
   use-particles-legacy: true
   use-block-displays: true
 
-# Image processing
 images:
   default-dither: true
   max-width: 10
   max-height: 10
   connection-timeout: 10000
   read-timeout: 30000
+
+# Vault economy integration
+economy:
+  enabled: false
+  enable-buy-command: true
+  cost-per-map: 100.0
+  multiply-by-tiles: true
+
+# GUI browser
+gui:
+  enabled: true
+  show-cost-in-tooltip: true
 ```
 
 ## Commands
 
+Main command: `/finemaps` (aliases: `/fm`, `/maps`)
+
 | Command | Description | Permission |
 |---------|-------------|------------|
-| `/finemaps url <name> <url> [width] [height] [dither]` | Create map from URL with a name | `finemaps.url` |
-| `/finemaps get <name>` | Get a map item by name | `finemaps.get` |
-| `/finemaps delete <name>` | Delete a map by name | `finemaps.delete` |
-| `/finemaps list [pluginId]` | List stored maps | `finemaps.list` |
-| `/finemaps info <name>` | Show map information by name | `finemaps.info` |
+| `/finemaps create` | Create a blank 1x1 FineMaps map and give it to you | `finemaps.create` |
+| `/finemaps url <name> <url> [width] [height] [dither]` | Create a 1x1 or multi-block art from an image URL | `finemaps.url` |
+| `/finemaps import [mapId] [name]` | Import a vanilla filled map (held or by id) into FineMaps | `finemaps.import` |
+| `/finemaps convert [mapId] [name]` | Alias of `import` | `finemaps.import` |
+| `/finemaps importall [world]` | Bulk-import all vanilla `map_*.dat` files (optionally for one world) | `finemaps.importall` |
+| `/finemaps convertall [world]` | Alias of `importall` | `finemaps.importall` |
+| `/finemaps get <name>` | Get a stored map art item by name (single or multi-block) | `finemaps.get` |
+| `/finemaps give <name>` | Alias of `get` | `finemaps.get` |
+| `/finemaps delete <name>` | Delete a stored map art by name (single or multi-block) | `finemaps.delete` |
+| `/finemaps remove <name>` | Alias of `delete` | `finemaps.delete` |
+| `/finemaps list [pluginId]` | List stored maps for a plugin namespace (defaults to `finemaps`) | `finemaps.list` |
+| `/finemaps info <name>` | Show stored map art info (type, size, IDs, timestamps) | `finemaps.info` |
 | `/finemaps stats` | Show plugin statistics | `finemaps.stats` |
 | `/finemaps reload` | Reload configuration | `finemaps.reload` |
-| `/finemaps debug <seed\|placemaps\|stop\|inspect> ...` | Admin debug/load-testing tools | `finemaps.admin` |
+| `/finemaps gui` | Open the paginated art browser GUI | `finemaps.gui` |
+| `/finemaps gallery` / `/finemaps arts` | Aliases of `gui` | `finemaps.gui` |
+| `/finemaps buy <name>` | Buy a map art (requires economy enabled + Vault) | `finemaps.buy` |
+| `/finemaps config get <path>` | Read a config value by path | `finemaps.config` |
+| `/finemaps config set <path> <value>` | Set a config value by path (reloads config) | `finemaps.config` |
+| `/finemaps config reset <path>` | Reset a config value by path to default | `finemaps.config` |
+| `/finemaps debug <...>` | Debug/load-testing suite | `finemaps.admin` |
+
+### Notes
+
+- **Art names**: for `/finemaps url` and optional import naming, names must match `^[a-zA-Z0-9_-]+$` and be **≤ 32 chars**.
+- **Bulk vanilla imports**: named imports use the format `v_<world>_<id>` when possible (collisions fall back to unnamed imports).
 
 ### Debug / load testing
 
@@ -127,6 +160,8 @@ All debug subcommands require `finemaps.admin`:
 |------------|-------------|---------|
 | `finemaps.use` | Basic command access | true |
 | `finemaps.create` | Create blank maps | op |
+| `finemaps.import` | Import a vanilla filled map into FineMaps | op |
+| `finemaps.importall` | Bulk import vanilla `map_*.dat` files | op |
 | `finemaps.url` | Create maps from URLs | op |
 | `finemaps.get` | Get map items | op |
 | `finemaps.delete` | Delete maps | op |
@@ -134,9 +169,12 @@ All debug subcommands require `finemaps.admin`:
 | `finemaps.info` | View map info | op |
 | `finemaps.reload` | Reload configuration | op |
 | `finemaps.stats` | View statistics | op |
+| `finemaps.buy` | Buy map arts (and buy via GUI) | true |
+| `finemaps.gui` | Open the art browser GUI | true |
+| `finemaps.config` | Use `/finemaps config get/set/reset` | op |
 | `finemaps.admin` | Full admin access | op |
 | `finemaps.unlimited` | No map creation limit | op |
-| `finemaps.limit.<group>` | Use group-specific limit | false |
+| `finemaps.limit.<group>` | Use group-specific limit (based on `permissions.group-limits`) | false
 
 ## API Usage
 
