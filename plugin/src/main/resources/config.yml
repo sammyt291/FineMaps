@@ -81,7 +81,7 @@ images:
   # If no suffix is provided, K is assumed.
   max-url-download-size: 8192K
 
-  # Default FPS for animated image imports (GIF/APNG/WEBP) when not specified in the command
+  # Default FPS for animated imports (GIF/APNG/WEBP/MP4/WEBM) when not specified in the command
   default-animated-fps: 20
 
   # Path to ffmpeg executable used to decode video URL imports (MP4/WEBM).

@@ -268,7 +268,7 @@ public class FineMapsConfig {
         @ConfigName("max-url-download-size")
         private String maxUrlDownloadSize = "8192K";
 
-        @Comment("Default FPS for animated image imports (GIF/APNG/WEBP) when not specified in the command")
+        @Comment("Default FPS for animated imports (GIF/APNG/WEBP/MP4/WEBM) when not specified in the command")
         @ConfigName("default-animated-fps")
         private int defaultAnimatedFps = 20;
 

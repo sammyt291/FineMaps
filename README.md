@@ -147,6 +147,7 @@ Main command: `/finemaps` (aliases: `/fm`, `/maps`)
 ### Notes
 
 - **Art names**: for `/finemaps url` and optional import naming, names must match `^[a-zA-Z0-9_-]+$` and be **≤ 32 chars**.
+- **Video imports (MP4/WEBM)**: require `ffmpeg` to be installed. FineMaps will use `images.ffmpeg-path` if set, otherwise tries `ffmpeg` from PATH, then `plugins/FineMaps/ffmpeg`.
 - **Bulk vanilla imports**: named imports use the format `v_<world>_<id>` when possible (collisions fall back to unnamed imports).
 
 ### Debug / load testing

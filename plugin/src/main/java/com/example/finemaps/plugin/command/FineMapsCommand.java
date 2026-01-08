@@ -49,6 +49,7 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Main command handler for FineMaps.
@@ -1103,14 +1104,19 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
                     // Decode static or animated frames (images + optional video via ffmpeg)
                     String downloadedName = downloaded.getFileName().toString().toLowerCase(Locale.ROOT);
+                    String urlHint = urlStr != null ? urlStr.toLowerCase(Locale.ROOT) : "";
                     AnimatedImage decoded;
-                    if (downloadedName.endsWith(".mp4") || downloadedName.endsWith(".webm")) {
+                    boolean looksLikeVideo =
+                        downloadedName.endsWith(".mp4") || downloadedName.endsWith(".webm") ||
+                        urlHint.contains(".mp4") || urlHint.contains(".webm") ||
+                        urlHint.contains("format=mp4") || urlHint.contains("format=webm");
+                    if (looksLikeVideo) {
                         decoded = VideoDecoder.decode(
                             downloaded,
                             urlStr,
                             effectiveFps,
                             config.getImages().getMaxVideoFrames(),
-                            config.getImages().getFfmpegPath()
+                            resolveFfmpegPath()
                         );
                     } else {
                         decoded = GenericImageDecoder.decode(downloaded, urlStr);
@@ -1771,15 +1777,79 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         if (path.endsWith(".webm")) return "webm";
         if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "jpg";
 
+        // Heuristics for "extensionless" URLs (CDNs/proxies that omit suffixes)
+        if (lower.contains(".webm") || lower.contains("format=webm")) return "webm";
+        if (lower.contains(".mp4") || lower.contains("format=mp4")) return "mp4";
+
         if (contentType != null) {
-            if (contentType.equals("image/png")) return "png";
-            if (contentType.equals("image/gif")) return "gif";
-            if (contentType.equals("image/webp")) return "webp";
-            if (contentType.equals("image/jpeg")) return "jpg";
-            if (contentType.equals("video/mp4")) return "mp4";
-            if (contentType.equals("video/webm")) return "webm";
+            String ct = contentType.toLowerCase(Locale.ROOT).trim();
+            int semi = ct.indexOf(';');
+            if (semi >= 0) ct = ct.substring(0, semi).trim();
+            if (ct.startsWith("image/png")) return "png";
+            if (ct.startsWith("image/gif")) return "gif";
+            if (ct.startsWith("image/webp")) return "webp";
+            if (ct.startsWith("image/jpeg")) return "jpg";
+            if (ct.startsWith("video/mp4")) return "mp4";
+            if (ct.startsWith("video/webm")) return "webm";
         }
         return "bin";
+    }
+
+    /**
+     * Resolve the ffmpeg binary path.
+     *
+     * Order:
+     * - config images.ffmpeg-path (if set and works)
+     * - "ffmpeg" from PATH (if works)
+     * - <plugin data folder>/ffmpeg (if present/works)
+     */
+    private String resolveFfmpegPath() {
+        String configured = null;
+        try {
+            configured = config.getImages().getFfmpegPath();
+        } catch (Throwable ignored) {
+        }
+
+        // 1) Configured path
+        if (configured != null && !configured.isBlank()) {
+            String p = configured.trim();
+            if (canExecuteFfmpeg(p)) return p;
+        }
+
+        // 2) PATH
+        if (canExecuteFfmpeg("ffmpeg")) return "ffmpeg";
+
+        // 3) Plugin data folder root
+        try {
+            File data = plugin.getDataFolder();
+            if (data != null) {
+                File local = new File(data, "ffmpeg");
+                if (local.isFile() && canExecuteFfmpeg(local.getAbsolutePath())) {
+                    return local.getAbsolutePath();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // Fall back to whatever the user configured (or PATH) so the decoder error is explicit.
+        if (configured != null && !configured.isBlank()) return configured.trim();
+        return "ffmpeg";
+    }
+
+    private boolean canExecuteFfmpeg(String path) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(path, "-version");
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            boolean finished = p.waitFor(5, TimeUnit.SECONDS);
+            if (!finished) {
+                p.destroyForcibly();
+                return false;
+            }
+            return p.exitValue() == 0;
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private static final class UrlCacheWriteResult {
