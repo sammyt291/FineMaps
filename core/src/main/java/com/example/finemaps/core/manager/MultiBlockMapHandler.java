@@ -951,7 +951,12 @@ public class MultiBlockMapHandler {
                 // Find item frame at this location
                 for (Entity entity : world.getNearbyEntities(loc.clone().add(0.5, 0.5, 0.5), 0.6, 0.6, 0.6)) {
                     if (entity instanceof ItemFrame) {
-                        framesToRemove.add((ItemFrame) entity);
+                        ItemFrame frame = (ItemFrame) entity;
+                        // Critical: only remove frames that actually belong to this group.
+                        // Nearby-entity queries can include edge-adjacent frames depending on hitboxes.
+                        if (isFrameInMultiBlockGroup(frame, groupId)) {
+                            framesToRemove.add(frame);
+                        }
                     }
                 }
             }
@@ -1012,6 +1017,31 @@ public class MultiBlockMapHandler {
                 world.dropItemNaturally(originLocation, dropItem);
             }
         }
+    }
+
+    /**
+     * Returns true if the given item frame is part of the specified multi-block group.
+     *
+     * We check both:
+     * - Entity persistent data (set when FineMaps spawns the frame)
+     * - The item-in-frame metadata (backup for older/edge cases)
+     */
+    private boolean isFrameInMultiBlockGroup(ItemFrame frame, long groupId) {
+        if (frame == null || groupId <= 0) return false;
+
+        try {
+            PersistentDataContainer framePdc = frame.getPersistentDataContainer();
+            Long frameGroupId = framePdc.get(groupIdKey, PersistentDataType.LONG);
+            if (frameGroupId != null && frameGroupId == groupId) {
+                return true;
+            }
+        } catch (Throwable ignored) {
+            // Best-effort; fall back to item meta check
+        }
+
+        ItemStack item = frame.getItem();
+        if (item == null) return false;
+        return mapManager.getGroupIdFromItem(item) == groupId;
     }
 
     /**
