@@ -43,7 +43,7 @@ public class MultiBlockMapHandler {
     // Track preview display entity per player (for block display previews)
     private final Map<UUID, Integer> playerPreviewDisplay = new ConcurrentHashMap<>();
     
-    // Track which players have preview task running
+    // Track which players have preview task running (redundant with playerPreviewTasks, but kept for quick checks)
     private final Set<UUID> playersWithPreview = Collections.newSetFromMap(new ConcurrentHashMap<>());
     
     // Track last preview state per player for efficient updates
@@ -151,17 +151,14 @@ public class MultiBlockMapHandler {
      */
     public void startPreviewTask(Player player) {
         UUID playerId = player.getUniqueId();
-        
-        // Cancel any existing task first
+
+        // If already running, don't restart (important: this can be called by pickup/inventory events).
         BukkitTask existingTask = playerPreviewTasks.get(playerId);
         if (existingTask != null) {
-            existingTask.cancel();
+            playersWithPreview.add(playerId);
+            return;
         }
-        
-        if (playersWithPreview.contains(playerId)) {
-            return; // Already running
-        }
-        
+
         playersWithPreview.add(playerId);
         
         BukkitTask task = new BukkitRunnable() {
@@ -952,6 +949,12 @@ public class MultiBlockMapHandler {
                 for (Entity entity : world.getNearbyEntities(loc.clone().add(0.5, 0.5, 0.5), 0.6, 0.6, 0.6)) {
                     if (entity instanceof ItemFrame) {
                         ItemFrame frame = (ItemFrame) entity;
+                        // Extra safety: only consider frames that are actually in this exact block-space.
+                        // Nearby-entity queries can include edge-adjacent frames depending on hitboxes.
+                        Location fl = frame.getLocation();
+                        if (fl.getBlockX() != loc.getBlockX() || fl.getBlockY() != loc.getBlockY() || fl.getBlockZ() != loc.getBlockZ()) {
+                            continue;
+                        }
                         // Critical: only remove frames that actually belong to this group.
                         // Nearby-entity queries can include edge-adjacent frames depending on hitboxes.
                         if (isFrameInMultiBlockGroup(frame, groupId)) {
