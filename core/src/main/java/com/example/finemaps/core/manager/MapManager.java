@@ -5,6 +5,7 @@ import com.example.finemaps.api.event.MapCreateEvent;
 import com.example.finemaps.api.event.MapDeleteEvent;
 import com.example.finemaps.api.event.MapLoadEvent;
 import com.example.finemaps.api.map.MapData;
+import com.example.finemaps.api.map.ArtSummary;
 import com.example.finemaps.api.map.MultiBlockMap;
 import com.example.finemaps.api.map.StoredMap;
 import com.example.finemaps.core.config.FineMapsConfig;
@@ -28,6 +29,7 @@ import java.awt.image.BufferedImage;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -57,6 +59,15 @@ public class MapManager implements FineMapsAPI {
     
     // Track chunk loading to prevent loops
     private final Set<String> processingChunks = Collections.newSetFromMap(new ConcurrentHashMap<>());
+
+    private static final class CachedArts {
+        volatile List<ArtSummary> arts = Collections.emptyList();
+        volatile long lastRefreshMs = 0L;
+        final AtomicBoolean refreshing = new AtomicBoolean(false);
+    }
+
+    private final Map<String, CachedArts> artCacheByPlugin = new ConcurrentHashMap<>();
+    private final long artCacheTtlMs = 5000L;
 
     public MapManager(Plugin plugin, FineMapsConfig config, DatabaseProvider database, 
                       NMSAdapter nmsAdapter) {
@@ -843,5 +854,36 @@ public class MapManager implements FineMapsAPI {
      */
     public DatabaseProvider getDatabase() {
         return database;
+    }
+
+    /**
+     * Gets cached named art entries for a plugin (single maps + multi-block groups).
+     * This is intended for synchronous contexts like tab-completion; it returns the latest cached view
+     * and triggers an async refresh when stale.
+     */
+    public List<ArtSummary> getCachedArtSummaries(String pluginId) {
+        if (pluginId == null) return Collections.emptyList();
+        CachedArts cache = artCacheByPlugin.computeIfAbsent(pluginId, k -> new CachedArts());
+        long now = System.currentTimeMillis();
+        if (now - cache.lastRefreshMs > artCacheTtlMs) {
+            refreshArtSummaries(pluginId);
+        }
+        return cache.arts != null ? cache.arts : Collections.emptyList();
+    }
+
+    public CompletableFuture<List<ArtSummary>> refreshArtSummaries(String pluginId) {
+        if (pluginId == null) return CompletableFuture.completedFuture(Collections.emptyList());
+        CachedArts cache = artCacheByPlugin.computeIfAbsent(pluginId, k -> new CachedArts());
+        if (!cache.refreshing.compareAndSet(false, true)) {
+            return CompletableFuture.completedFuture(cache.arts != null ? cache.arts : Collections.emptyList());
+        }
+
+        return database.getArtSummariesByPlugin(pluginId).thenApply(list -> {
+            List<ArtSummary> sorted = new ArrayList<>(list != null ? list : Collections.emptyList());
+            sorted.sort(Comparator.comparing(ArtSummary::getName, String.CASE_INSENSITIVE_ORDER));
+            cache.arts = Collections.unmodifiableList(sorted);
+            cache.lastRefreshMs = System.currentTimeMillis();
+            return cache.arts;
+        }).whenComplete((v, err) -> cache.refreshing.set(false));
     }
 }

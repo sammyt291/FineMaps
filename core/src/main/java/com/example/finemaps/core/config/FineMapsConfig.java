@@ -32,6 +32,14 @@ public class FineMapsConfig {
     @ConfigName("images")
     private ImageConfig images = new ImageConfig();
 
+    @Comment("Economy settings (Vault)")
+    @ConfigName("economy")
+    private EconomyConfig economy = new EconomyConfig();
+
+    @Comment("GUI settings")
+    @ConfigName("gui")
+    private GuiConfig gui = new GuiConfig();
+
     public DatabaseConfig getDatabase() {
         return database;
     }
@@ -46,6 +54,14 @@ public class FineMapsConfig {
 
     public ImageConfig getImages() {
         return images;
+    }
+
+    public EconomyConfig getEconomy() {
+        return economy;
+    }
+
+    public GuiConfig getGui() {
+        return gui;
     }
 
     @ConfigMappable
@@ -258,6 +274,60 @@ public class FineMapsConfig {
 
         public int getReadTimeout() {
             return readTimeout;
+        }
+    }
+
+    @ConfigMappable
+    public static class EconomyConfig {
+        @Comment("Enable Vault economy integration (requires Vault + an economy plugin)")
+        @ConfigName("enabled")
+        private boolean enabled = false;
+
+        @Comment("Enable /fm buy")
+        @ConfigName("enable-buy-command")
+        private boolean enableBuyCommand = true;
+
+        @Comment("Base cost per 1x1 map (multi-block cost multiplies by tiles if enabled)")
+        @ConfigName("cost-per-map")
+        private double costPerMap = 100.0;
+
+        @Comment("If true, multi-block map cost = cost-per-map * (width * height)")
+        @ConfigName("multiply-by-tiles")
+        private boolean multiplyByTiles = true;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public boolean isEnableBuyCommand() {
+            return enableBuyCommand;
+        }
+
+        public double getCostPerMap() {
+            return costPerMap;
+        }
+
+        public boolean isMultiplyByTiles() {
+            return multiplyByTiles;
+        }
+    }
+
+    @ConfigMappable
+    public static class GuiConfig {
+        @Comment("Enable the paginated art browser GUI")
+        @ConfigName("enabled")
+        private boolean enabled = true;
+
+        @Comment("Show cost in the GUI tooltip when buying is enabled")
+        @ConfigName("show-cost-in-tooltip")
+        private boolean showCostInTooltip = true;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public boolean isShowCostInTooltip() {
+            return showCostInTooltip;
         }
     }
 }

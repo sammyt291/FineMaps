@@ -3,6 +3,7 @@ package com.example.finemaps.core.database;
 import com.example.finemaps.api.map.MapData;
 import com.example.finemaps.api.map.MultiBlockMap;
 import com.example.finemaps.api.map.StoredMap;
+import com.example.finemaps.api.map.ArtSummary;
 import com.example.finemaps.core.compression.RLECompression;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -710,6 +711,51 @@ public abstract class AbstractDatabaseProvider implements DatabaseProvider {
                 logger.log(Level.SEVERE, "Failed to check name: " + name, e);
             }
             return false;
+        }, executor);
+    }
+
+    @Override
+    public CompletableFuture<List<ArtSummary>> getArtSummariesByPlugin(String pluginId) {
+        return CompletableFuture.supplyAsync(() -> {
+            List<ArtSummary> arts = new ArrayList<>();
+            if (pluginId == null) return arts;
+
+            // Single maps: group_id = 0, metadata holds the name.
+            String singleSql = "SELECT id, metadata FROM finemaps_maps WHERE plugin_id = ? AND group_id = 0 AND metadata IS NOT NULL AND metadata <> ''";
+            // Groups: metadata holds the name.
+            String groupSql = "SELECT id, metadata, width, height FROM finemaps_groups WHERE plugin_id = ? AND metadata IS NOT NULL AND metadata <> ''";
+
+            try (Connection conn = dataSource.getConnection()) {
+                try (PreparedStatement stmt = conn.prepareStatement(groupSql)) {
+                    stmt.setString(1, pluginId);
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        while (rs.next()) {
+                            long id = rs.getLong("id");
+                            String name = rs.getString("metadata");
+                            int width = rs.getInt("width");
+                            int height = rs.getInt("height");
+                            if (name == null || name.trim().isEmpty()) continue;
+                            arts.add(new ArtSummary(pluginId, name, true, id, width, height));
+                        }
+                    }
+                }
+
+                try (PreparedStatement stmt = conn.prepareStatement(singleSql)) {
+                    stmt.setString(1, pluginId);
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        while (rs.next()) {
+                            long id = rs.getLong("id");
+                            String name = rs.getString("metadata");
+                            if (name == null || name.trim().isEmpty()) continue;
+                            arts.add(new ArtSummary(pluginId, name, false, id, 1, 1));
+                        }
+                    }
+                }
+            } catch (SQLException e) {
+                logger.log(Level.SEVERE, "Failed to list art entries for plugin: " + pluginId, e);
+            }
+
+            return arts;
         }, executor);
     }
 }

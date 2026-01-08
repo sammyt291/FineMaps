@@ -8,6 +8,7 @@ website: https://github.com/example/finemaps
 
 softdepend:
   - ProtocolLib
+  - Vault
 
 folia-supported: true
 
@@ -52,6 +53,15 @@ permissions:
   finemaps.stats:
     description: Allows viewing FineMaps statistics
     default: op
+  finemaps.buy:
+    description: Allows purchasing map arts (/finemaps buy and GUI buy)
+    default: true
+  finemaps.gui:
+    description: Allows opening the FineMaps art browser GUI
+    default: true
+  finemaps.config:
+    description: Allows using /finemaps config get/set/reset
+    default: op
   finemaps.admin:
     description: Full admin access to FineMaps
     default: op
@@ -67,6 +77,9 @@ permissions:
       finemaps.info: true
       finemaps.reload: true
       finemaps.stats: true
+      finemaps.buy: true
+      finemaps.gui: true
+      finemaps.config: true
   finemaps.unlimited:
     description: No limit on map creation
     default: op

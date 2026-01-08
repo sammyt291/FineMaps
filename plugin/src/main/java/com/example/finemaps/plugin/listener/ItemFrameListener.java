@@ -220,9 +220,20 @@ public class ItemFrameListener implements Listener {
             // Check if this is a multi-block map item
             long groupId = mapManager.getGroupIdFromItem(handItem);
             if (groupId > 0) {
-                // Don't allow placing multi-block map items into frames
-                // They need to be placed via the dedicated placement system
+                // Allow placing into EXISTING frames as a grid, starting from the clicked frame.
+                // If there are not enough frames, show an error.
                 event.setCancelled(true);
+
+                boolean frameEmpty = frameItem == null || frameItem.getType().isAir();
+                if (!frameEmpty) {
+                    player.sendMessage(ChatColor.RED + "That item frame is not empty.");
+                    return;
+                }
+
+                // Attempt placement using existing frames.
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    multiBlockHandler.tryPlaceMultiBlockMapIntoExistingFrames(player, frame, handItem, EquipmentSlot.HAND);
+                });
                 return;
             }
             

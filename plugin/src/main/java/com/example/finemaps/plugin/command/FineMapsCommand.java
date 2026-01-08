@@ -3,13 +3,16 @@ package com.example.finemaps.plugin.command;
 import com.example.finemaps.api.map.MapData;
 import com.example.finemaps.api.map.MultiBlockMap;
 import com.example.finemaps.api.map.StoredMap;
+import com.example.finemaps.api.map.ArtSummary;
 import com.example.finemaps.core.config.FineMapsConfig;
 import com.example.finemaps.core.image.ImageProcessor;
 import com.example.finemaps.core.manager.MapManager;
 import com.example.finemaps.plugin.FineMapsPlugin;
 import com.example.finemaps.plugin.util.VanillaMapDatReader;
+import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.Material;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -20,6 +23,12 @@ import org.bukkit.map.MapRenderer;
 import org.bukkit.map.MapView;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.World;
+import org.bukkit.configuration.file.FileConfiguration;
+import redempt.redlib.inventorygui.InventoryGUI;
+import redempt.redlib.inventorygui.ItemButton;
+import redempt.redlib.inventorygui.PaginationPanel;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 
 import javax.imageio.ImageIO;
 import java.io.File;
@@ -59,6 +68,14 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         switch (subCommand) {
             case "create":
                 return handleCreate(sender, args);
+            case "buy":
+                return handleBuy(sender, args);
+            case "gui":
+            case "gallery":
+            case "arts":
+                return handleGui(sender, args);
+            case "config":
+                return handleConfig(sender, args);
             case "debug":
                 return handleDebug(sender, label, args);
             case "convert":
@@ -113,12 +130,361 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                           ChatColor.GRAY + " - List maps");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps info <name>" + 
                           ChatColor.GRAY + " - Show map info by name");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps buy <name>" +
+                          ChatColor.GRAY + " - Buy a map art (Vault)");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps gui" +
+                          ChatColor.GRAY + " - Open paginated map art browser");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps config <get|set|reset> ..." +
+                          ChatColor.GRAY + " - View/change config values");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps stats" + 
                           ChatColor.GRAY + " - Show statistics");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps reload" + 
                           ChatColor.GRAY + " - Reload config");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps debug <seed|placemaps|stop|inspect>" +
                           ChatColor.GRAY + " - Admin debug/load-test tools");
+    }
+
+    private boolean handleBuy(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(ChatColor.RED + "This command can only be used by players.");
+            return true;
+        }
+        Player player = (Player) sender;
+        if (!player.hasPermission("finemaps.buy")) {
+            player.sendMessage(ChatColor.RED + "You don't have permission to buy maps.");
+            return true;
+        }
+        if (config.getEconomy() == null || !config.getEconomy().isEnableBuyCommand()) {
+            player.sendMessage(ChatColor.RED + "/fm buy is disabled.");
+            return true;
+        }
+        if (!plugin.isEconomyEnabled()) {
+            player.sendMessage(ChatColor.RED + "Economy is not available (Vault/provider missing or disabled).");
+            return true;
+        }
+        if (args.length < 2) {
+            player.sendMessage(ChatColor.RED + "Usage: /finemaps buy <name>");
+            return true;
+        }
+
+        String name = args[1];
+        buyArt(player, name, true);
+        return true;
+    }
+
+    private boolean handleGui(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(ChatColor.RED + "This command can only be used by players.");
+            return true;
+        }
+        Player player = (Player) sender;
+        if (!player.hasPermission("finemaps.gui")) {
+            player.sendMessage(ChatColor.RED + "You don't have permission to open the GUI.");
+            return true;
+        }
+        if (config.getGui() == null || !config.getGui().isEnabled()) {
+            player.sendMessage(ChatColor.RED + "The GUI is disabled.");
+            return true;
+        }
+
+        // Load/refresh arts asynchronously, then open GUI on main thread.
+        mapManager.refreshArtSummaries("finemaps").thenAccept(arts -> {
+            plugin.getServer().getScheduler().runTask(plugin, () -> openArtBrowserGui(player, arts));
+        });
+        return true;
+    }
+
+    private boolean handleConfig(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("finemaps.config")) {
+            sender.sendMessage(ChatColor.RED + "You don't have permission to manage config.");
+            return true;
+        }
+        if (args.length < 2) {
+            sender.sendMessage(ChatColor.RED + "Usage: /finemaps config <get|set|reset> ...");
+            return true;
+        }
+
+        String action = args[1].toLowerCase(Locale.ROOT);
+        redempt.redlib.config.ConfigManager cm = plugin.getConfigManager();
+        if (cm == null) {
+            sender.sendMessage(ChatColor.RED + "Config manager is not available.");
+            return true;
+        }
+        FileConfiguration fc = cm.getConfig();
+
+        switch (action) {
+            case "get": {
+                if (args.length < 3) {
+                    sender.sendMessage(ChatColor.RED + "Usage: /finemaps config get <path>");
+                    return true;
+                }
+                String path = args[2];
+                Object value = fc.get(path);
+                if (value == null) {
+                    sender.sendMessage(ChatColor.YELLOW + path + ChatColor.GRAY + " = " + ChatColor.RED + "<null>");
+                } else {
+                    sender.sendMessage(ChatColor.YELLOW + path + ChatColor.GRAY + " = " + ChatColor.WHITE + String.valueOf(value));
+                }
+                return true;
+            }
+            case "set": {
+                if (args.length < 4) {
+                    sender.sendMessage(ChatColor.RED + "Usage: /finemaps config set <path> <value>");
+                    return true;
+                }
+                String path = args[2];
+                String raw = args[3];
+
+                Object existing = fc.get(path);
+                Object parsed = parseConfigValue(existing, raw);
+                fc.set(path, parsed);
+                cm.save();
+                plugin.reloadFineMapsConfiguration();
+                sender.sendMessage(ChatColor.GREEN + "Set " + ChatColor.YELLOW + path + ChatColor.GREEN + " to " + ChatColor.WHITE + String.valueOf(parsed));
+                return true;
+            }
+            case "reset": {
+                if (args.length < 3) {
+                    sender.sendMessage(ChatColor.RED + "Usage: /finemaps config reset <path>");
+                    return true;
+                }
+                String path = args[2];
+                fc.set(path, null);
+                cm.save();
+                // Restore defaults for removed keys and reload.
+                cm.saveDefaults();
+                plugin.reloadFineMapsConfiguration();
+                sender.sendMessage(ChatColor.GREEN + "Reset " + ChatColor.YELLOW + path + ChatColor.GREEN + " to default.");
+                return true;
+            }
+            default:
+                sender.sendMessage(ChatColor.RED + "Usage: /finemaps config <get|set|reset> ...");
+                return true;
+        }
+    }
+
+    private Object parseConfigValue(Object existing, String raw) {
+        if (existing instanceof Boolean) {
+            return Boolean.parseBoolean(raw);
+        }
+        if (existing instanceof Integer) {
+            try { return Integer.parseInt(raw); } catch (Exception ignored) { return raw; }
+        }
+        if (existing instanceof Long) {
+            try { return Long.parseLong(raw); } catch (Exception ignored) { return raw; }
+        }
+        if (existing instanceof Double || existing instanceof Float) {
+            try { return Double.parseDouble(raw); } catch (Exception ignored) { return raw; }
+        }
+        // Heuristic if key doesn't exist yet.
+        if ("true".equalsIgnoreCase(raw) || "false".equalsIgnoreCase(raw)) {
+            return Boolean.parseBoolean(raw);
+        }
+        try {
+            if (raw.contains(".")) return Double.parseDouble(raw);
+            return Integer.parseInt(raw);
+        } catch (Exception ignored) {
+        }
+        return raw;
+    }
+
+    private void openArtBrowserGui(Player player, List<ArtSummary> arts) {
+        if (player == null || !player.isOnline()) return;
+        List<ArtSummary> list = arts != null ? arts : Collections.emptyList();
+
+        InventoryGUI gui = new InventoryGUI(54, ChatColor.DARK_GREEN + "FineMaps Arts");
+        gui.setDestroyOnClose(true);
+
+        // Fill bottom row with filler.
+        gui.fill(45, 53, InventoryGUI.FILLER);
+
+        PaginationPanel panel = new PaginationPanel(gui, InventoryGUI.FILLER);
+        panel.addSlots(0, 44);
+
+        boolean buyEnabled = plugin.isEconomyEnabled() && config.getEconomy() != null && config.getEconomy().isEnableBuyCommand();
+
+        for (ArtSummary art : list) {
+            ItemStack display = createGuiDisplayItem(art, buyEnabled);
+            ItemButton btn = ItemButton.create(display, e -> {
+                e.setCancelled(true);
+                if (!player.isOnline()) return;
+                if (buyEnabled) {
+                    buyArt(player, art.getName(), false);
+                } else {
+                    if (!player.hasPermission("finemaps.get")) {
+                        player.sendMessage(ChatColor.RED + "You don't have permission to get maps.");
+                        return;
+                    }
+                    giveArtByName(player, art.getName());
+                }
+            });
+            panel.addPagedButton(btn);
+        }
+
+        // Prev/Next buttons
+        gui.addButton(ItemButton.create(namedButton(Material.ARROW, ChatColor.YELLOW + "Previous Page"), e -> {
+            e.setCancelled(true);
+            panel.prevPage();
+            gui.update();
+        }), 45);
+        gui.addButton(ItemButton.create(namedButton(Material.ARROW, ChatColor.YELLOW + "Next Page"), e -> {
+            e.setCancelled(true);
+            panel.nextPage();
+            gui.update();
+        }), 53);
+
+        panel.updatePage();
+        gui.open(player);
+    }
+
+    private ItemStack namedButton(Material mat, String name) {
+        ItemStack item = new ItemStack(mat);
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null) {
+            meta.setDisplayName(name);
+            item.setItemMeta(meta);
+        }
+        return item;
+    }
+
+    private ItemStack createGuiDisplayItem(ArtSummary art, boolean buyEnabled) {
+        if (art == null) return new ItemStack(Material.MAP);
+
+        ItemStack item;
+        if (art.isMultiBlock()) {
+            item = mapManager.createMultiBlockMapItemWithName(art.getId(), art.getName());
+            if (item == null) {
+                item = new ItemStack(Material.MAP);
+            }
+        } else {
+            item = mapManager.createMapItem(art.getId());
+            ItemMeta meta = item.getItemMeta();
+            if (meta != null) {
+                meta.setDisplayName(ChatColor.GOLD + "Map: " + art.getName());
+                List<String> lore = new ArrayList<>();
+                lore.add(ChatColor.GRAY + "Size: 1x1");
+                meta.setLore(lore);
+                item.setItemMeta(meta);
+            }
+        }
+
+        if (buyEnabled && config.getGui() != null && config.getGui().isShowCostInTooltip()) {
+            double cost = costFor(art);
+            ItemMeta meta = item.getItemMeta();
+            if (meta != null) {
+                List<String> lore = meta.hasLore() ? new ArrayList<>(meta.getLore()) : new ArrayList<>();
+                lore.add("");
+                lore.add(ChatColor.GREEN + "Cost: " + ChatColor.WHITE + formatMoney(cost));
+                meta.setLore(lore);
+                item.setItemMeta(meta);
+            }
+        }
+        return item;
+    }
+
+    private String formatMoney(double amount) {
+        Economy eco = plugin.getEconomy();
+        try {
+            if (eco != null) return eco.format(amount);
+        } catch (Throwable ignored) {
+        }
+        return String.format(Locale.US, "%.2f", amount);
+    }
+
+    private double costFor(ArtSummary art) {
+        if (art == null || config.getEconomy() == null) return 0.0;
+        double base = Math.max(0.0, config.getEconomy().getCostPerMap());
+        if (!art.isMultiBlock()) return base;
+        if (!config.getEconomy().isMultiplyByTiles()) return base;
+        return base * Math.max(1, art.getWidth()) * Math.max(1, art.getHeight());
+    }
+
+    private void buyArt(Player player, String name, boolean fromCommand) {
+        if (player == null || name == null) return;
+        Economy eco = plugin.getEconomy();
+        if (eco == null || !plugin.isEconomyEnabled()) {
+            player.sendMessage(ChatColor.RED + "Economy is not available.");
+            return;
+        }
+
+        // Resolve art name (group first, then single).
+        mapManager.getGroupByName("finemaps", name).thenAccept(optGroup -> {
+            if (optGroup.isPresent()) {
+                long groupId = optGroup.get();
+                mapManager.getMultiBlockMap(groupId).thenAccept(optMap -> {
+                    if (!optMap.isPresent()) {
+                        plugin.getServer().getScheduler().runTask(plugin, () -> player.sendMessage(ChatColor.RED + "Map not found: " + name));
+                        return;
+                    }
+                    MultiBlockMap mm = optMap.get();
+                    ArtSummary art = new ArtSummary("finemaps", name, true, groupId, mm.getWidth(), mm.getHeight());
+                    double cost = costFor(art);
+                    attemptChargeAndGive(player, art, cost);
+                });
+                return;
+            }
+            mapManager.getMapByName("finemaps", name).thenAccept(optMapId -> {
+                if (!optMapId.isPresent()) {
+                    plugin.getServer().getScheduler().runTask(plugin, () -> player.sendMessage(ChatColor.RED + "Map not found: " + name));
+                    return;
+                }
+                long mapId = optMapId.get();
+                ArtSummary art = new ArtSummary("finemaps", name, false, mapId, 1, 1);
+                double cost = costFor(art);
+                attemptChargeAndGive(player, art, cost);
+            });
+        });
+    }
+
+    private void attemptChargeAndGive(Player player, ArtSummary art, double cost) {
+        Economy eco = plugin.getEconomy();
+        if (eco == null) return;
+
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            if (!player.isOnline()) return;
+            if (cost > 0.0) {
+                try {
+                    if (!eco.has(player, cost)) {
+                        player.sendMessage(ChatColor.RED + "You need " + ChatColor.WHITE + formatMoney(cost) + ChatColor.RED + " to buy this.");
+                        return;
+                    }
+                    net.milkbowl.vault.economy.EconomyResponse res = eco.withdrawPlayer(player, cost);
+                    if (res == null || !res.transactionSuccess()) {
+                        player.sendMessage(ChatColor.RED + "Purchase failed: " + (res != null ? res.errorMessage : "unknown"));
+                        return;
+                    }
+                } catch (Throwable t) {
+                    player.sendMessage(ChatColor.RED + "Purchase failed.");
+                    return;
+                }
+            }
+
+            if (art.isMultiBlock()) {
+                mapManager.giveMultiBlockMapToPlayerWithName(player, art.getId(), art.getName());
+            } else {
+                mapManager.giveMapToPlayerWithName(player, art.getId(), art.getName());
+            }
+            player.sendMessage(ChatColor.GREEN + "Purchased " + ChatColor.YELLOW + art.getName() + ChatColor.GREEN + " for " + ChatColor.WHITE + formatMoney(cost));
+        });
+    }
+
+    private void giveArtByName(Player player, String name) {
+        if (player == null || name == null) return;
+        mapManager.getGroupByName("finemaps", name).thenAccept(optGroupId -> {
+            if (optGroupId.isPresent()) {
+                long groupId = optGroupId.get();
+                plugin.getServer().getScheduler().runTask(plugin, () -> mapManager.giveMultiBlockMapToPlayerWithName(player, groupId, name));
+                return;
+            }
+            mapManager.getMapByName("finemaps", name).thenAccept(optMapId -> {
+                if (!optMapId.isPresent()) {
+                    plugin.getServer().getScheduler().runTask(plugin, () -> player.sendMessage(ChatColor.RED + "Map not found: " + name));
+                    return;
+                }
+                long mapId = optMapId.get();
+                plugin.getServer().getScheduler().runTask(plugin, () -> mapManager.giveMapToPlayerWithName(player, mapId, name));
+            });
+        });
     }
 
     private boolean handleImportVanilla(CommandSender sender, String[] args) {
@@ -944,7 +1310,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        plugin.reloadConfig();
+        plugin.reloadFineMapsConfiguration();
         sender.sendMessage(ChatColor.GREEN + "Configuration reloaded.");
         return true;
     }
@@ -975,6 +1341,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             return filterStartsWith(args[0], Arrays.asList(
                 "url", "get", "delete", "list", "info", "stats", "reload", "create", "debug",
                 "import", "importall", "convert", "convertall"
+                , "buy", "gui", "config"
             ));
         }
 
@@ -982,6 +1349,9 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             String sub = args[0].toLowerCase();
             if (sub.equals("debug")) {
                 return debugCommand.tabComplete(new String[]{args[1]});
+            }
+            if (sub.equals("config")) {
+                return filterStartsWith(args[1], Arrays.asList("get", "set", "reset"));
             }
             if (sub.equals("url") || sub.equals("fromurl")) {
                 return Collections.singletonList("<name>");
@@ -1004,9 +1374,9 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                 worlds.add(0, "all");
                 return filterStartsWith(args[1], worlds);
             }
-            if (sub.equals("get") || sub.equals("give") || sub.equals("delete") || 
-                sub.equals("remove") || sub.equals("info")) {
-                return Collections.singletonList("<name>");
+            if (sub.equals("get") || sub.equals("give") || sub.equals("delete") ||
+                sub.equals("remove") || sub.equals("info") || sub.equals("buy")) {
+                return filterStartsWith(args[1], getCachedArtNames());
             }
             if (sub.equals("list")) {
                 return Collections.singletonList("<pluginId>");
@@ -1025,7 +1395,22 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             if (args.length == 6) return Arrays.asList("true", "false");
         }
 
+        if (args.length >= 3 && args[0].equalsIgnoreCase("config")) {
+            if (args.length == 3) {
+                return Collections.singletonList("<path>");
+            }
+            if (args.length == 4 && args[1].equalsIgnoreCase("set")) {
+                return Collections.singletonList("<value>");
+            }
+        }
+
         return Collections.emptyList();
+    }
+
+    private List<String> getCachedArtNames() {
+        List<ArtSummary> arts = mapManager.getCachedArtSummaries("finemaps");
+        if (arts.isEmpty()) return Collections.singletonList("<name>");
+        return arts.stream().map(ArtSummary::getName).distinct().collect(Collectors.toList());
     }
 
     private List<String> filterStartsWith(String input, List<String> options) {

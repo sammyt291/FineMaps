@@ -18,6 +18,9 @@ dependencies {
     
     // ProtocolLib - provided at runtime
     compileOnly("net.dmulloy2:ProtocolLib:5.4.0")
+
+    // Vault API (economy) - provided at runtime (JitPack)
+    compileOnly("com.github.MilkBowl:VaultAPI:1.7")
 }
 
 tasks {
