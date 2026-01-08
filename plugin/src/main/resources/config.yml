@@ -84,6 +84,13 @@ images:
   # Default FPS for animated image imports (GIF/APNG/WEBP) when not specified in the command
   default-animated-fps: 20
 
+  # Path to ffmpeg executable used to decode video URL imports (MP4/WEBM).
+  # Set to 'ffmpeg' to use the system PATH.
+  ffmpeg-path: ffmpeg
+
+  # Maximum number of frames to extract from a video import (MP4/WEBM)
+  max-video-frames: 300
+
 economy:
   # Enable Vault economy integration (requires Vault + an economy plugin)
   enabled: false

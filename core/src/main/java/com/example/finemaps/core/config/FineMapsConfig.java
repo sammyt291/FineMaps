@@ -272,6 +272,14 @@ public class FineMapsConfig {
         @ConfigName("default-animated-fps")
         private int defaultAnimatedFps = 20;
 
+        @Comment("Path to ffmpeg executable used to decode video URL imports (MP4/WEBM). Set to 'ffmpeg' to use PATH.")
+        @ConfigName("ffmpeg-path")
+        private String ffmpegPath = "ffmpeg";
+
+        @Comment("Maximum number of frames to extract from a video import (MP4/WEBM)")
+        @ConfigName("max-video-frames")
+        private int maxVideoFrames = 300;
+
         public boolean isDefaultDither() {
             return defaultDither;
         }
@@ -306,6 +314,14 @@ public class FineMapsConfig {
 
         public int getDefaultAnimatedFps() {
             return defaultAnimatedFps;
+        }
+
+        public String getFfmpegPath() {
+            return ffmpegPath;
+        }
+
+        public int getMaxVideoFrames() {
+            return maxVideoFrames;
         }
     }
 
