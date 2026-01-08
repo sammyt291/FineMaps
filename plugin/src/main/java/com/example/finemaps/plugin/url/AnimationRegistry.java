@@ -7,7 +7,13 @@ import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.configuration.file.YamlConfiguration;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
@@ -15,6 +21,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Runtime animation playback for maps created from animated images.
@@ -27,6 +34,10 @@ public final class AnimationRegistry {
     private final Plugin plugin;
     private final MapManager mapManager;
     private final NMSAdapter nmsAdapter;
+    private final String cacheFolderName;
+
+    private final File persistFile;
+    private final AtomicBoolean loadedPersisted = new AtomicBoolean(false);
 
     private final Map<String, Animation> animationsByName = new ConcurrentHashMap<>();
     /**
@@ -39,10 +50,12 @@ public final class AnimationRegistry {
     private volatile Map<Long, Map<UUID, Set<Integer>>> viewersByDbMapId = new HashMap<>();
     private int viewerScanTaskId = -1;
 
-    public AnimationRegistry(Plugin plugin, MapManager mapManager) {
+    public AnimationRegistry(Plugin plugin, MapManager mapManager, String cacheFolderName) {
         this.plugin = plugin;
         this.mapManager = mapManager;
         this.nmsAdapter = mapManager.getNmsAdapter();
+        this.cacheFolderName = (cacheFolderName != null && !cacheFolderName.isBlank()) ? cacheFolderName : "url-cache";
+        this.persistFile = new File(plugin.getDataFolder(), "animations.yml");
     }
 
     public void stopAll() {
@@ -69,6 +82,177 @@ public final class AnimationRegistry {
         animationsByName.put(name, a);
         ensureViewerScan();
         a.start();
+    }
+
+    /**
+     * Persists an animation definition so it can be restored after restart/reload.
+     *
+     * This does NOT write any pixel data itself; the caller must ensure processed color frames
+     * exist on disk in the expected cache structure (see FineMapsCommand url import).
+     */
+    public void persistSingleDefinition(String name, String url, int width, int height, boolean raster, int fps, long mapId) {
+        if (name == null || name.isBlank() || url == null || url.isBlank()) return;
+        if (mapId <= 0) return;
+        YamlConfiguration cfg = loadPersistConfig();
+        String base = "animations." + name + ".";
+        cfg.set(base + "type", "single");
+        cfg.set(base + "url", url);
+        cfg.set(base + "width", width);
+        cfg.set(base + "height", height);
+        cfg.set(base + "raster", raster);
+        cfg.set(base + "fps", fps);
+        cfg.set(base + "mapId", mapId);
+
+        // If there isn't already a playhead, initialize it "now".
+        if (cfg.get(base + "paused") == null && cfg.get(base + "startEpochMs") == null) {
+            cfg.set(base + "paused", false);
+            cfg.set(base + "startEpochMs", System.currentTimeMillis());
+            cfg.set(base + "offsetMs", 0L);
+            cfg.set(base + "pausedPositionMs", 0L);
+        }
+        savePersistConfig(cfg);
+    }
+
+    public void persistMultiDefinition(String name, String url, int width, int height, boolean raster, int fps, long groupId) {
+        if (name == null || name.isBlank() || url == null || url.isBlank()) return;
+        if (groupId <= 0) return;
+        YamlConfiguration cfg = loadPersistConfig();
+        String base = "animations." + name + ".";
+        cfg.set(base + "type", "multi");
+        cfg.set(base + "url", url);
+        cfg.set(base + "width", width);
+        cfg.set(base + "height", height);
+        cfg.set(base + "raster", raster);
+        cfg.set(base + "fps", fps);
+        cfg.set(base + "groupId", groupId);
+
+        if (cfg.get(base + "paused") == null && cfg.get(base + "startEpochMs") == null) {
+            cfg.set(base + "paused", false);
+            cfg.set(base + "startEpochMs", System.currentTimeMillis());
+            cfg.set(base + "offsetMs", 0L);
+            cfg.set(base + "pausedPositionMs", 0L);
+        }
+        savePersistConfig(cfg);
+    }
+
+    /**
+     * Loads persisted animations from disk and starts them. Safe to call multiple times.
+     */
+    public void loadAndStartPersisted() {
+        if (!loadedPersisted.compareAndSet(false, true)) {
+            return;
+        }
+        YamlConfiguration cfg = loadPersistConfig();
+        if (cfg == null) return;
+        if (!cfg.isConfigurationSection("animations")) return;
+
+        for (String name : cfg.getConfigurationSection("animations").getKeys(false)) {
+            if (name == null || name.isBlank()) continue;
+            String base = "animations." + name + ".";
+            String type = cfg.getString(base + "type", "");
+            String url = cfg.getString(base + "url", null);
+            int width = cfg.getInt(base + "width", 1);
+            int height = cfg.getInt(base + "height", 1);
+            boolean raster = cfg.getBoolean(base + "raster", true);
+            int fps = cfg.getInt(base + "fps", 10);
+
+            boolean paused = cfg.getBoolean(base + "paused", false);
+            long startEpochMs = cfg.getLong(base + "startEpochMs", System.currentTimeMillis());
+            long offsetMs = cfg.getLong(base + "offsetMs", 0L);
+            long pausedPositionMs = cfg.getLong(base + "pausedPositionMs", 0L);
+
+            if (url == null || url.isBlank()) continue;
+
+            try {
+                if ("single".equalsIgnoreCase(type)) {
+                    long mapId = cfg.getLong(base + "mapId", -1L);
+                    if (mapId <= 0) continue;
+                    List<byte[]> frames = loadSingleFramesFromCache(url, width, height, raster, fps);
+                    if (frames == null || frames.isEmpty()) continue;
+                    Animation a = Animation.single(plugin, mapManager, () -> viewersByDbMapId, mapId, fps, frames);
+                    a.restorePlayhead(paused, startEpochMs, offsetMs, pausedPositionMs);
+                    Animation existing = animationsByName.put(name, a);
+                    if (existing != null) existing.stop();
+                    ensureViewerScan();
+                    a.start();
+                    continue;
+                }
+                if ("multi".equalsIgnoreCase(type)) {
+                    long groupId = cfg.getLong(base + "groupId", -1L);
+                    if (groupId <= 0) continue;
+                    // Resolve map ids in tile order from DB.
+                    com.example.finemaps.api.map.MultiBlockMap mm = mapManager.getMultiBlockMap(groupId).join().orElse(null);
+                    if (mm == null) continue;
+                    List<Long> mapIds = tileOrderMapIds(mm, width, height);
+                    if (mapIds == null || mapIds.isEmpty()) continue;
+                    List<byte[][]> frames = loadMultiFramesFromCache(url, width, height, raster, fps);
+                    if (frames == null || frames.isEmpty()) continue;
+                    Animation a = Animation.multi(plugin, mapManager, () -> viewersByDbMapId, mapIds, width, height, fps, frames);
+                    a.restorePlayhead(paused, startEpochMs, offsetMs, pausedPositionMs);
+                    Animation existing = animationsByName.put(name, a);
+                    if (existing != null) existing.stop();
+                    ensureViewerScan();
+                    a.start();
+                }
+            } catch (Throwable ignored) {
+                // Best-effort; a bad entry should not prevent the plugin from enabling.
+            }
+        }
+    }
+
+    /**
+     * Saves current playhead state for all running animations to disk.
+     */
+    public void savePersistedState() {
+        YamlConfiguration cfg = loadPersistConfig();
+        if (cfg == null) return;
+        if (!cfg.isConfigurationSection("animations")) {
+            cfg.createSection("animations");
+        }
+        for (Map.Entry<String, Animation> e : animationsByName.entrySet()) {
+            String name = e.getKey();
+            Animation a = e.getValue();
+            if (name == null || name.isBlank() || a == null) continue;
+            String base = "animations." + name + ".";
+            Animation.PlayheadSnapshot snap = a.snapshotPlayhead();
+            cfg.set(base + "paused", snap.paused);
+            cfg.set(base + "startEpochMs", snap.startEpochMs);
+            cfg.set(base + "offsetMs", snap.offsetMs);
+            cfg.set(base + "pausedPositionMs", snap.pausedPositionMs);
+        }
+        savePersistConfig(cfg);
+    }
+
+    /**
+     * Animation controls (used by /fm anim ...).
+     */
+    public boolean restartByDbMapId(long dbMapId) {
+        Animation a = findByDbMapId(dbMapId);
+        if (a == null) return false;
+        a.restartNow();
+        return true;
+    }
+
+    public Boolean togglePauseByDbMapId(long dbMapId) {
+        Animation a = findByDbMapId(dbMapId);
+        if (a == null) return null;
+        return a.togglePause();
+    }
+
+    public boolean skipByDbMapId(long dbMapId, long deltaMs) {
+        if (deltaMs == 0) return true;
+        Animation a = findByDbMapId(dbMapId);
+        if (a == null) return false;
+        a.skipMs(deltaMs);
+        return true;
+    }
+
+    private Animation findByDbMapId(long dbMapId) {
+        if (dbMapId <= 0) return null;
+        for (Animation a : animationsByName.values()) {
+            if (a != null && a.containsDbMapId(dbMapId)) return a;
+        }
+        return null;
     }
 
     private void ensureViewerScan() {
@@ -148,7 +332,8 @@ public final class AnimationRegistry {
         private final MapManager mapManager;
         private final NMSAdapter nmsAdapter;
         private final java.util.function.Supplier<Map<Long, Map<UUID, Set<Integer>>>> viewersSupplier;
-        private final double ticksPerFrame;
+        private final int fps;
+        private final double frameDurationMs;
 
         private final boolean isMulti;
         private final long singleMapId;
@@ -160,13 +345,17 @@ public final class AnimationRegistry {
         private final List<byte[][]> multiFrames;
 
         private int taskId = -1;
-        private int idx = 0;
-        private double tickAccumulator = 0.0;
+        private volatile boolean paused = false;
+        private volatile long startEpochMs = System.currentTimeMillis();
+        private volatile long offsetMs = 0L;
+        private volatile long pausedPositionMs = 0L;
+
+        private volatile int lastIdx = -1;
 
         private Animation(Plugin plugin,
                           MapManager mapManager,
                           java.util.function.Supplier<Map<Long, Map<UUID, Set<Integer>>>> viewersSupplier,
-                          double ticksPerFrame,
+                          int fps,
                           boolean isMulti,
                           long singleMapId,
                           List<byte[]> singleFrames,
@@ -178,7 +367,8 @@ public final class AnimationRegistry {
             this.mapManager = mapManager;
             this.nmsAdapter = mapManager.getNmsAdapter();
             this.viewersSupplier = viewersSupplier != null ? viewersSupplier : java.util.Collections::emptyMap;
-            this.ticksPerFrame = Math.max(1.0, ticksPerFrame);
+            this.fps = Math.max(1, Math.min(20, fps));
+            this.frameDurationMs = 1000.0 / this.fps;
             this.isMulti = isMulti;
             this.singleMapId = singleMapId;
             this.singleFrames = singleFrames;
@@ -194,8 +384,7 @@ public final class AnimationRegistry {
                                 long mapId,
                                 int fps,
                                 List<byte[]> frames) {
-            double tpf = ticksPerFrameForFps(fps);
-            return new Animation(plugin, mapManager, viewersSupplier, tpf, false, mapId, frames, null, 0, 0, null);
+            return new Animation(plugin, mapManager, viewersSupplier, fps, false, mapId, frames, null, 0, 0, null);
         }
 
         static Animation multi(Plugin plugin,
@@ -206,13 +395,12 @@ public final class AnimationRegistry {
                                int height,
                                int fps,
                                List<byte[][]> frames) {
-            double tpf = ticksPerFrameForFps(fps);
-            return new Animation(plugin, mapManager, viewersSupplier, tpf, true, -1L, null, mapIdsInTileOrder, width, height, frames);
+            return new Animation(plugin, mapManager, viewersSupplier, fps, true, -1L, null, mapIdsInTileOrder, width, height, frames);
         }
 
         void start() {
             if (taskId != -1) return;
-            // Run every tick and advance frames based on a stable accumulator.
+            // Run every tick; we compute frame from wall-clock time to survive chunk unload/reload and plugin reload.
             taskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, this, 1L, 1L);
         }
 
@@ -225,48 +413,33 @@ public final class AnimationRegistry {
 
         @Override
         public void run() {
-            // Maintain stable timing even when fps doesn't divide 20 cleanly.
-            tickAccumulator += 1.0;
-            if (tickAccumulator + 1e-9 < ticksPerFrame) {
-                return;
-            }
-            // If we fell behind, advance multiple frames but cap the catch-up per tick to avoid spirals.
-            int advance = 0;
-            while (tickAccumulator + 1e-9 >= ticksPerFrame && advance < 5) {
-                tickAccumulator -= ticksPerFrame;
-                advance++;
-            }
-            if (advance <= 0) return;
+            int idx = currentFrameIndex();
+            if (idx < 0) return;
+            if (idx == lastIdx) return;
+            lastIdx = idx;
 
             if (!isMulti) {
                 if (singleFrames == null || singleFrames.isEmpty()) return;
-                for (int a = 0; a < advance; a++) {
-                    byte[] frame = singleFrames.get(idx % singleFrames.size());
-                    idx++;
-                    // Always update in-memory pixels (keeps compatibility with the MapRenderer path).
-                    mapManager.updateMapPixelsRuntime(singleMapId, frame);
-                    // If ProtocolLib is present, push packets to viewers (smooth in-world playback).
-                    pushToViewers(singleMapId, frame);
-                }
+                byte[] frame = singleFrames.get(idx % singleFrames.size());
+                // Always update in-memory pixels (keeps compatibility with the MapRenderer path).
+                mapManager.updateMapPixelsRuntime(singleMapId, frame);
+                // If ProtocolLib is present, push packets to viewers (smooth in-world playback).
+                pushToViewers(singleMapId, frame);
                 return;
             }
 
             if (multiFrames == null || multiFrames.isEmpty()) return;
             if (multiMapIds == null || multiMapIds.isEmpty()) return;
+            byte[][] tiles = multiFrames.get(idx % multiFrames.size());
+            int expectedTiles = multiWidth * multiHeight;
+            if (tiles == null || tiles.length != expectedTiles) return;
+            if (multiMapIds.size() != expectedTiles) return;
 
-            for (int a = 0; a < advance; a++) {
-                byte[][] tiles = multiFrames.get(idx % multiFrames.size());
-                idx++;
-                int expectedTiles = multiWidth * multiHeight;
-                if (tiles == null || tiles.length != expectedTiles) return;
-                if (multiMapIds.size() != expectedTiles) return;
-
-                for (int i = 0; i < expectedTiles; i++) {
-                    long mapId = multiMapIds.get(i);
-                    byte[] pixels = tiles[i];
-                    mapManager.updateMapPixelsRuntime(mapId, pixels);
-                    pushToViewers(mapId, pixels);
-                }
+            for (int i = 0; i < expectedTiles; i++) {
+                long mapId = multiMapIds.get(i);
+                byte[] pixels = tiles[i];
+                mapManager.updateMapPixelsRuntime(mapId, pixels);
+                pushToViewers(mapId, pixels);
             }
         }
 
@@ -277,6 +450,112 @@ public final class AnimationRegistry {
                 return;
             }
             if (multiMapIds != null) out.addAll(multiMapIds);
+        }
+
+        boolean containsDbMapId(long dbMapId) {
+            if (dbMapId <= 0) return false;
+            if (!isMulti) {
+                return singleMapId == dbMapId;
+            }
+            return multiMapIds != null && multiMapIds.contains(dbMapId);
+        }
+
+        void restorePlayhead(boolean paused, long startEpochMs, long offsetMs, long pausedPositionMs) {
+            this.paused = paused;
+            this.startEpochMs = startEpochMs > 0 ? startEpochMs : System.currentTimeMillis();
+            this.offsetMs = offsetMs;
+            this.pausedPositionMs = Math.max(0L, pausedPositionMs);
+            this.lastIdx = -1; // force immediate push
+        }
+
+        void restartNow() {
+            this.paused = false;
+            this.startEpochMs = System.currentTimeMillis();
+            this.offsetMs = 0L;
+            this.pausedPositionMs = 0L;
+            this.lastIdx = -1;
+        }
+
+        boolean togglePause() {
+            if (!paused) {
+                // Pause: capture current position (mod duration).
+                this.pausedPositionMs = currentPositionMsModDuration();
+                this.paused = true;
+                this.lastIdx = -1; // force a push on resume
+                return true;
+            }
+            // Resume: convert paused position into (start, offset) anchored "now".
+            this.paused = false;
+            this.startEpochMs = System.currentTimeMillis();
+            this.offsetMs = this.pausedPositionMs;
+            this.lastIdx = -1;
+            return false;
+        }
+
+        void skipMs(long deltaMs) {
+            if (deltaMs == 0) return;
+            if (paused) {
+                long dur = durationMs();
+                if (dur <= 0) return;
+                long next = this.pausedPositionMs + deltaMs;
+                // Normalize into [0, dur)
+                this.pausedPositionMs = floorMod(next, dur);
+                this.lastIdx = -1;
+                return;
+            }
+            this.offsetMs += deltaMs;
+            this.lastIdx = -1;
+        }
+
+        PlayheadSnapshot snapshotPlayhead() {
+            if (paused) {
+                return new PlayheadSnapshot(true, startEpochMs, offsetMs, currentPositionMsModDuration());
+            }
+            // For running animations we store raw start/offset; this preserves continuity across reloads.
+            return new PlayheadSnapshot(false, startEpochMs, offsetMs, 0L);
+        }
+
+        private int currentFrameIndex() {
+            int frameCount = frameCount();
+            if (frameCount <= 0) return -1;
+            long dur = durationMs();
+            if (dur <= 0) return -1;
+
+            long posMs = paused ? floorMod(pausedPositionMs, dur) : currentPositionMsModDuration();
+            // Convert position into frame index.
+            long frameNum = (long) Math.floor(posMs / frameDurationMs);
+            int idx = (int) floorMod(frameNum, frameCount);
+            return idx;
+        }
+
+        private long currentPositionMsModDuration() {
+            long dur = durationMs();
+            if (dur <= 0) return 0L;
+            long now = System.currentTimeMillis();
+            long elapsed = (now - startEpochMs) + offsetMs;
+            return floorMod(elapsed, dur);
+        }
+
+        private int frameCount() {
+            if (!isMulti) {
+                return (singleFrames != null) ? singleFrames.size() : 0;
+            }
+            return (multiFrames != null) ? multiFrames.size() : 0;
+        }
+
+        private long durationMs() {
+            int count = frameCount();
+            if (count <= 0) return 0L;
+            // Use double duration and round to nearest millisecond to avoid truncating to 0 at high fps.
+            double total = frameDurationMs * count;
+            long ms = (long) Math.round(total);
+            return Math.max(1L, ms);
+        }
+
+        private static long floorMod(long a, long b) {
+            if (b <= 0) return 0L;
+            long r = a % b;
+            return r < 0 ? (r + b) : r;
         }
 
         private void pushToViewers(long dbMapId, byte[] pixels) {
@@ -299,11 +578,119 @@ public final class AnimationRegistry {
             }
         }
 
-        private static double ticksPerFrameForFps(int fps) {
-            int safe = Math.max(1, Math.min(20, fps));
-            // 20 server ticks per second.
-            return 20.0 / safe;
+        private static final class PlayheadSnapshot {
+            final boolean paused;
+            final long startEpochMs;
+            final long offsetMs;
+            final long pausedPositionMs;
+
+            private PlayheadSnapshot(boolean paused, long startEpochMs, long offsetMs, long pausedPositionMs) {
+                this.paused = paused;
+                this.startEpochMs = startEpochMs;
+                this.offsetMs = offsetMs;
+                this.pausedPositionMs = pausedPositionMs;
+            }
         }
+    }
+
+    private YamlConfiguration loadPersistConfig() {
+        try {
+            if (!plugin.getDataFolder().exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                plugin.getDataFolder().mkdirs();
+            }
+            if (!persistFile.exists()) {
+                return new YamlConfiguration();
+            }
+            return YamlConfiguration.loadConfiguration(persistFile);
+        } catch (Throwable t) {
+            return new YamlConfiguration();
+        }
+    }
+
+    private void savePersistConfig(YamlConfiguration cfg) {
+        if (cfg == null) return;
+        try {
+            if (!plugin.getDataFolder().exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                plugin.getDataFolder().mkdirs();
+            }
+            cfg.save(persistFile);
+        } catch (IOException ignored) {
+        }
+    }
+
+    private List<byte[]> loadSingleFramesFromCache(String url, int width, int height, boolean raster, int fps) throws IOException {
+        if (width != 1 || height != 1) return java.util.Collections.emptyList();
+        Path dir = cacheVariantColorsDir(url, width, height, raster, fps);
+        if (dir == null || !Files.isDirectory(dir)) return java.util.Collections.emptyList();
+        java.util.List<Path> files = new java.util.ArrayList<>();
+        try (DirectoryStream<Path> ds = Files.newDirectoryStream(dir, "frame_*.bin")) {
+            for (Path p : ds) {
+                if (p != null && Files.isRegularFile(p)) files.add(p);
+            }
+        }
+        files.sort(java.util.Comparator.comparing(p -> String.valueOf(p.getFileName())));
+
+        List<byte[]> out = new java.util.ArrayList<>(files.size());
+        for (Path p : files) {
+            byte[] bytes = Files.readAllBytes(p);
+            if (bytes.length != com.example.finemaps.api.map.MapData.TOTAL_PIXELS) continue;
+            out.add(bytes);
+        }
+        return out;
+    }
+
+    private List<byte[][]> loadMultiFramesFromCache(String url, int width, int height, boolean raster, int fps) throws IOException {
+        if (width <= 0 || height <= 0) return java.util.Collections.emptyList();
+        int tiles = width * height;
+        int tileSize = com.example.finemaps.api.map.MapData.TOTAL_PIXELS;
+        int expected = tiles * tileSize;
+        Path dir = cacheVariantColorsDir(url, width, height, raster, fps);
+        if (dir == null || !Files.isDirectory(dir)) return java.util.Collections.emptyList();
+        java.util.List<Path> files = new java.util.ArrayList<>();
+        try (DirectoryStream<Path> ds = Files.newDirectoryStream(dir, "frame_*.bin")) {
+            for (Path p : ds) {
+                if (p != null && Files.isRegularFile(p)) files.add(p);
+            }
+        }
+        files.sort(java.util.Comparator.comparing(p -> String.valueOf(p.getFileName())));
+
+        List<byte[][]> out = new java.util.ArrayList<>(files.size());
+        for (Path p : files) {
+            byte[] bytes = Files.readAllBytes(p);
+            if (bytes.length != expected) continue;
+            byte[][] tilesArr = new byte[tiles][tileSize];
+            int off = 0;
+            for (int i = 0; i < tiles; i++) {
+                System.arraycopy(bytes, off, tilesArr[i], 0, tileSize);
+                off += tileSize;
+            }
+            out.add(tilesArr);
+        }
+        return out;
+    }
+
+    private Path cacheVariantColorsDir(String url, int width, int height, boolean raster, int fps) {
+        if (url == null) return null;
+        Path baseDir = UrlCache.cacheDirForUrl(plugin.getDataFolder(), cacheFolderName, url);
+        String variant = String.format(java.util.Locale.ROOT, "variant_%dx%d_r%s_fps%d", width, height, raster ? "1" : "0", fps);
+        return baseDir.resolve(variant).resolve("colors");
+    }
+
+    private List<Long> tileOrderMapIds(com.example.finemaps.api.map.MultiBlockMap multiMap, int width, int height) {
+        if (multiMap == null) return java.util.Collections.emptyList();
+        long[] ids = new long[Math.max(1, width * height)];
+        java.util.Arrays.fill(ids, -1L);
+        for (com.example.finemaps.api.map.StoredMap m : multiMap.getMaps()) {
+            int x = m.getGridX();
+            int y = m.getGridY();
+            if (x < 0 || y < 0 || x >= width || y >= height) continue;
+            ids[y * width + x] = m.getId();
+        }
+        List<Long> out = new java.util.ArrayList<>();
+        for (long id : ids) out.add(id);
+        return out;
     }
 }
 
