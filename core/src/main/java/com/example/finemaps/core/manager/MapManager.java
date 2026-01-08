@@ -137,6 +137,44 @@ public class MapManager implements FineMapsAPI {
     }
 
     /**
+     * Ensures that the Bukkit MapView referenced by an existing ItemStack is bound to our renderer.
+     * <p>
+     * After server restart, stored map items in item frames still reference the original Bukkit map id,
+     * but FineMaps' in-memory MapView/renderer mappings are empty. This method re-attaches our renderer
+     * to the existing MapView so clients can see the map again without re-placing the item.
+     *
+     * This should be called on the main thread (it mutates MapView renderers).
+     */
+    public void bindMapViewToItem(ItemStack item) {
+        if (item == null) return;
+        if (!isStoredMap(item)) return;
+
+        long dbMapId = getMapIdFromItem(item);
+        if (dbMapId <= 0) return;
+
+        int bukkitMapId = nmsAdapter.getMapId(item);
+        if (bukkitMapId < 0) return;
+
+        // Bind the exact Bukkit map id this item references.
+        mapViewManager.bindExistingBukkitMapId(dbMapId, bukkitMapId, () -> {
+            MapData cachedData = mapDataCache.get(dbMapId);
+            if (cachedData != null) {
+                return cachedData.getPixelsUnsafe();
+            }
+            try {
+                Optional<MapData> optData = database.getMapData(dbMapId).join();
+                if (optData.isPresent()) {
+                    mapDataCache.put(dbMapId, optData.get());
+                    return optData.get().getPixelsUnsafe();
+                }
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "Failed to load map data for " + dbMapId, e);
+            }
+            return new byte[MapData.TOTAL_PIXELS];
+        });
+    }
+
+    /**
      * Ensures a map's pixel data is loaded and the MapView is initialized.
      *
      * @param dbMapId The database map ID

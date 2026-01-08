@@ -73,6 +73,11 @@ public class ChunkListener implements Listener {
                         ItemStack item = frame.getItem();
                         
                         if (item != null && mapManager.isStoredMap(item)) {
+                            // Re-bind the existing Bukkit map id in this frame after restart.
+                            try {
+                                mapManager.bindMapViewToItem(item);
+                            } catch (Throwable ignored) {
+                            }
                             long mapId = mapManager.getMapIdFromItem(item);
                             if (mapId != -1) {
                                 mapsToLoad.add(mapId);

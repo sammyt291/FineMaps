@@ -287,6 +287,7 @@ public final class AnimationRegistry {
             return;
         }
 
+        Map<Long, Map<UUID, Set<Integer>>> prev = viewersByDbMapId;
         Map<Long, Map<UUID, Set<Integer>>> next = new HashMap<>();
 
         for (Player player : Bukkit.getOnlinePlayers()) {
@@ -307,7 +308,49 @@ public final class AnimationRegistry {
             }
         }
 
+        // Swap in the index first (so Animation pushes see the latest viewers).
         viewersByDbMapId = next;
+
+        // Immediately push the current frame to newly-added viewers.
+        // This fixes the "invisible until you pick up / re-place" behavior after restarts,
+        // and ensures players see the animation as soon as they come into range.
+        if (prev != null && !prev.isEmpty()) {
+            pushCurrentFramesToNewViewers(prev, next);
+        } else {
+            // On the first scan after startup, treat everyone as "new".
+            pushCurrentFramesToNewViewers(new HashMap<>(), next);
+        }
+    }
+
+    private void pushCurrentFramesToNewViewers(Map<Long, Map<UUID, Set<Integer>>> prev,
+                                               Map<Long, Map<UUID, Set<Integer>>> next) {
+        if (next == null || next.isEmpty()) return;
+        for (Map.Entry<Long, Map<UUID, Set<Integer>>> e : next.entrySet()) {
+            long dbMapId = e.getKey() != null ? e.getKey() : -1L;
+            if (dbMapId <= 0) continue;
+            Map<UUID, Set<Integer>> nextByPlayer = e.getValue();
+            if (nextByPlayer == null || nextByPlayer.isEmpty()) continue;
+
+            Map<UUID, Set<Integer>> prevByPlayer = (prev != null) ? prev.get(dbMapId) : null;
+            for (Map.Entry<UUID, Set<Integer>> pe : nextByPlayer.entrySet()) {
+                UUID uuid = pe.getKey();
+                if (uuid == null) continue;
+                Set<Integer> nextIds = pe.getValue();
+                if (nextIds == null || nextIds.isEmpty()) continue;
+
+                Set<Integer> prevIds = (prevByPlayer != null) ? prevByPlayer.get(uuid) : null;
+                for (Integer vanillaMapId : nextIds) {
+                    if (vanillaMapId == null || vanillaMapId < 0) continue;
+                    if (prevIds != null && prevIds.contains(vanillaMapId)) continue; // not new
+
+                    Player p = Bukkit.getPlayer(uuid);
+                    if (p == null || !p.isOnline()) continue;
+                    Animation a = findByDbMapId(dbMapId);
+                    if (a == null) continue;
+                    a.forceSendCurrentFrameTo(p, vanillaMapId, dbMapId);
+                }
+            }
+        }
     }
 
     private void addViewerFromItem(Map<Long, Map<UUID, Set<Integer>>> out,
@@ -321,6 +364,13 @@ public final class AnimationRegistry {
 
         int vanillaMapId = nmsAdapter.getMapId(item);
         if (vanillaMapId < 0) return;
+
+        // Critical after restart: re-bind the existing Bukkit map id in this item to our renderer mapping.
+        // This makes Bukkit adapter updates (player.sendMap) work again without re-placing frames.
+        try {
+            mapManager.bindMapViewToItem(item);
+        } catch (Throwable ignored) {
+        }
 
         Map<UUID, Set<Integer>> byPlayer = out.computeIfAbsent(dbMapId, k -> new HashMap<>());
         Set<Integer> mapIds = byPlayer.computeIfAbsent(playerUuid, k -> new HashSet<>());
@@ -576,6 +626,39 @@ public final class AnimationRegistry {
                     nmsAdapter.sendMapUpdate(p, vanillaMapId, pixels);
                 }
             }
+        }
+
+        /**
+         * Sends the current frame immediately to a specific player/map id pair.
+         * Used when a viewer first comes into range so they don't have to interact to "wake up" the map.
+         */
+        private void forceSendCurrentFrameTo(Player player, int vanillaMapId, long dbMapId) {
+            if (player == null || !player.isOnline()) return;
+            if (vanillaMapId < 0 || dbMapId <= 0) return;
+
+            int idx = currentFrameIndex();
+            if (idx < 0) return;
+
+            byte[] pixels = null;
+            if (!isMulti) {
+                if (singleMapId != dbMapId) return;
+                if (singleFrames == null || singleFrames.isEmpty()) return;
+                pixels = singleFrames.get(idx % singleFrames.size());
+            } else {
+                if (multiFrames == null || multiFrames.isEmpty()) return;
+                if (multiMapIds == null || multiMapIds.isEmpty()) return;
+                int tileIdx = multiMapIds.indexOf(dbMapId);
+                if (tileIdx < 0) return;
+                byte[][] tiles = multiFrames.get(idx % multiFrames.size());
+                if (tiles == null || tileIdx >= tiles.length) return;
+                pixels = tiles[tileIdx];
+            }
+
+            if (pixels == null || pixels.length != com.example.finemaps.api.map.MapData.TOTAL_PIXELS) return;
+
+            // Ensure our runtime pixel cache/renderer is in sync, then push to the client.
+            mapManager.updateMapPixelsRuntime(dbMapId, pixels);
+            nmsAdapter.sendMapUpdate(player, vanillaMapId, pixels);
         }
 
         private static final class PlayheadSnapshot {
