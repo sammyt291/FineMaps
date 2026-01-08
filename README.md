@@ -98,6 +98,10 @@ images:
   max-height: 10
   connection-timeout: 10000
   read-timeout: 30000
+  url-cache-enabled: true
+  url-cache-folder: url-cache
+  max-url-download-size: 8192K
+  default-animated-fps: 20
 
 # Vault economy integration
 economy:
@@ -119,7 +123,7 @@ Main command: `/finemaps` (aliases: `/fm`, `/maps`)
 | Command | Description | Permission |
 |---------|-------------|------------|
 | `/finemaps create` | Create a blank 1x1 FineMaps map and give it to you | `finemaps.create` |
-| `/finemaps url <name> <url> [width] [height] [dither]` | Create a 1x1 or multi-block art from an image URL | `finemaps.url` |
+| `/finemaps url <url> <name> [w] [h] [raster] [fps]` | Create a 1x1 or multi-block art from an image URL (supports GIF/APNG/WEBP) | `finemaps.url` |
 | `/finemaps import [mapId] [name]` | Import a vanilla filled map (held or by id) into FineMaps | `finemaps.import` |
 | `/finemaps convert [mapId] [name]` | Alias of `import` | `finemaps.import` |
 | `/finemaps importall [world]` | Bulk-import all vanilla `map_*.dat` files (optionally for one world) | `finemaps.importall` |
