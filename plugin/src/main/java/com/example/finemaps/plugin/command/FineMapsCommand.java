@@ -7,17 +7,23 @@ import com.example.finemaps.core.config.FineMapsConfig;
 import com.example.finemaps.core.image.ImageProcessor;
 import com.example.finemaps.core.manager.MapManager;
 import com.example.finemaps.plugin.FineMapsPlugin;
+import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
+import org.bukkit.map.MapCanvas;
+import org.bukkit.map.MapRenderer;
+import org.bukkit.map.MapView;
+import org.bukkit.scheduler.BukkitRunnable;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.net.URL;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 /**
@@ -51,6 +57,9 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                 return handleCreate(sender, args);
             case "debug":
                 return handleDebug(sender, label, args);
+            case "import":
+            case "importvanilla":
+                return handleImportVanilla(sender, args);
             case "url":
             case "fromurl":
                 return handleFromUrl(sender, args);
@@ -79,6 +88,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(ChatColor.GOLD + "=== FineMaps Commands ===");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps url <name> <url> [width] [height] [dither]" + 
                           ChatColor.GRAY + " - Create map from URL with a name");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps import [mapId] [name]" +
+                          ChatColor.GRAY + " - Import a vanilla filled map (held or by id)");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps get <name>" + 
                           ChatColor.GRAY + " - Get a map item by name");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps delete <name>" + 
@@ -93,6 +104,207 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                           ChatColor.GRAY + " - Reload config");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps debug <seed|placemaps|stop|inspect>" +
                           ChatColor.GRAY + " - Admin debug/load-test tools");
+    }
+
+    private boolean handleImportVanilla(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(ChatColor.RED + "This command can only be used by players.");
+            return true;
+        }
+
+        Player player = (Player) sender;
+
+        if (!player.hasPermission("finemaps.import")) {
+            player.sendMessage(ChatColor.RED + "You don't have permission to import vanilla maps.");
+            return true;
+        }
+
+        // Check limit (import creates a new FineMaps map)
+        if (!mapManager.canCreateMaps(player)) {
+            int limit = mapManager.getMapLimit(player);
+            player.sendMessage(ChatColor.RED + "You have reached your map limit (" + limit + ").");
+            return true;
+        }
+
+        // Supported syntaxes:
+        // - /finemaps import                      (uses held vanilla map, no name)
+        // - /finemaps import <name>               (uses held vanilla map, stores name)
+        // - /finemaps import <mapId> [name]       (imports by vanilla/bukkit map id)
+        Integer bukkitMapId = null;
+        String artName = null;
+
+        if (args.length >= 2 && isInteger(args[1])) {
+            bukkitMapId = Integer.parseInt(args[1]);
+            if (args.length >= 3) {
+                artName = args[2];
+            }
+        } else {
+            if (args.length >= 2) {
+                artName = args[1];
+            }
+
+            // Use held item
+            org.bukkit.inventory.ItemStack hand = player.getInventory().getItemInMainHand();
+            if (hand == null || !plugin.getNmsAdapter().isFilledMap(hand)) {
+                player.sendMessage(ChatColor.RED + "Hold a vanilla filled map, or specify a mapId.");
+                player.sendMessage(ChatColor.GRAY + "Usage: /finemaps import [mapId] [name]");
+                return true;
+            }
+
+            // Refuse importing FineMaps maps (already managed)
+            if (mapManager.isStoredMap(hand)) {
+                player.sendMessage(ChatColor.RED + "That map is already a FineMaps map.");
+                player.sendMessage(ChatColor.GRAY + "To import vanilla maps, use a vanilla filled map item.");
+                return true;
+            }
+
+            bukkitMapId = plugin.getNmsAdapter().getMapId(hand);
+        }
+
+        if (bukkitMapId == null || bukkitMapId < 0) {
+            player.sendMessage(ChatColor.RED + "Could not determine the vanilla map id.");
+            return true;
+        }
+
+        // Validate art name if provided (same rules as /finemaps url)
+        if (artName != null) {
+            if (!artName.matches("^[a-zA-Z0-9_-]+$")) {
+                player.sendMessage(ChatColor.RED + "Art name can only contain letters, numbers, underscores, and hyphens.");
+                return true;
+            }
+            if (artName.length() > 32) {
+                player.sendMessage(ChatColor.RED + "Art name must be 32 characters or less.");
+                return true;
+            }
+        }
+
+        final int finalBukkitMapId = bukkitMapId;
+        final String finalArtName = artName;
+
+        // If a name was provided, ensure it isn't taken.
+        CompletableFuture<Boolean> nameCheck = (finalArtName == null)
+            ? CompletableFuture.completedFuture(false)
+            : mapManager.isNameTaken("finemaps", finalArtName);
+
+        nameCheck.thenAccept(taken -> {
+            if (taken) {
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    player.sendMessage(ChatColor.RED + "An art with the name '" + finalArtName + "' already exists.");
+                });
+                return;
+            }
+
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                player.sendMessage(ChatColor.YELLOW + "Importing vanilla map #" + finalBukkitMapId + "...");
+            });
+
+            captureRenderedVanillaMapPixels(player, finalBukkitMapId, 60L).thenCompose(pixels -> {
+                // Store as a new FineMaps map (snapshot)
+                return mapManager.createMapWithName("finemaps", pixels, finalArtName);
+            }).thenAccept(storedMap -> {
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    if (finalArtName != null) {
+                        mapManager.giveMapToPlayerWithName(player, storedMap.getId(), finalArtName);
+                        player.sendMessage(ChatColor.GREEN + "Imported vanilla map #" + finalBukkitMapId + " as '" + finalArtName + "'.");
+                    } else {
+                        mapManager.giveMapToPlayer(player, storedMap.getId());
+                        player.sendMessage(ChatColor.GREEN + "Imported vanilla map #" + finalBukkitMapId + " as FineMaps ID " + storedMap.getId() + ".");
+                    }
+                });
+            }).exceptionally(err -> {
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    player.sendMessage(ChatColor.RED + "Failed to import vanilla map: " + (err.getMessage() != null ? err.getMessage() : err.toString()));
+                });
+                return null;
+            });
+        });
+
+        return true;
+    }
+
+    /**
+     * Captures the pixel bytes of a vanilla/Bukkit MapView by adding a temporary renderer that
+     * reads the post-render canvas. This avoids NMS version-specific map-data access.
+     *
+     * @param player The player used to trigger rendering
+     * @param bukkitMapId The vanilla/bukkit map id
+     * @param timeoutTicks How long to try before failing
+     */
+    private CompletableFuture<byte[]> captureRenderedVanillaMapPixels(Player player, int bukkitMapId, long timeoutTicks) {
+        CompletableFuture<byte[]> future = new CompletableFuture<>();
+
+        MapView view = Bukkit.getMap(bukkitMapId);
+        if (view == null) {
+            future.completeExceptionally(new IllegalArgumentException("Unknown map id " + bukkitMapId));
+            return future;
+        }
+
+        // Renderer that snapshots the fully-rendered canvas into a byte[].
+        MapRenderer captureRenderer = new MapRenderer(false) {
+            private boolean done = false;
+
+            @Override
+            public void render(MapView map, MapCanvas canvas, Player renderPlayer) {
+                if (done || future.isDone()) return;
+                // We only need one render pass. Read the already-drawn pixels.
+                byte[] pixels = new byte[MapData.TOTAL_PIXELS];
+                int i = 0;
+                for (int y = 0; y < 128; y++) {
+                    for (int x = 0; x < 128; x++) {
+                        pixels[i++] = canvas.getPixel(x, y);
+                    }
+                }
+                done = true;
+                future.complete(pixels);
+            }
+        };
+
+        // Add our renderer last so it sees the final canvas.
+        view.addRenderer(captureRenderer);
+
+        // Repeatedly trigger map sending until render happens (or timeout).
+        new BukkitRunnable() {
+            long ticks = 0;
+
+            @Override
+            public void run() {
+                if (future.isDone()) {
+                    cleanup();
+                    cancel();
+                    return;
+                }
+                if (ticks++ >= timeoutTicks) {
+                    future.completeExceptionally(new RuntimeException("Timed out waiting for map render"));
+                    cleanup();
+                    cancel();
+                    return;
+                }
+                try {
+                    player.sendMap(view);
+                } catch (Throwable ignored) {
+                    // Best-effort; render may still happen via normal tick updates
+                }
+            }
+
+            private void cleanup() {
+                try {
+                    view.removeRenderer(captureRenderer);
+                } catch (Throwable ignored) {
+                }
+            }
+        }.runTaskTimer(plugin, 0L, 1L);
+
+        return future;
+    }
+
+    private boolean isInteger(String s) {
+        if (s == null || s.isEmpty()) return false;
+        try {
+            Integer.parseInt(s);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     private boolean handleDebug(CommandSender sender, String label, String[] args) {
@@ -544,7 +756,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             return filterStartsWith(args[0], Arrays.asList(
-                "url", "get", "delete", "list", "info", "stats", "reload", "create", "debug"
+                "url", "get", "delete", "list", "info", "stats", "reload", "create", "debug", "import"
             ));
         }
 
@@ -555,6 +767,9 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             }
             if (sub.equals("url") || sub.equals("fromurl")) {
                 return Collections.singletonList("<name>");
+            }
+            if (sub.equals("import") || sub.equals("importvanilla")) {
+                return Arrays.asList("<mapId>", "<name>");
             }
             if (sub.equals("get") || sub.equals("give") || sub.equals("delete") || 
                 sub.equals("remove") || sub.equals("info")) {

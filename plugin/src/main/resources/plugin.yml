@@ -25,6 +25,9 @@ permissions:
   finemaps.create:
     description: Allows creating blank maps
     default: op
+  finemaps.import:
+    description: Allows importing vanilla filled maps into FineMaps
+    default: op
   finemaps.url:
     description: Allows creating maps from URLs
     default: op
@@ -52,6 +55,7 @@ permissions:
     children:
       finemaps.use: true
       finemaps.create: true
+      finemaps.import: true
       finemaps.url: true
       finemaps.get: true
       finemaps.delete: true
