@@ -28,6 +28,9 @@ permissions:
   finemaps.import:
     description: Allows importing vanilla filled maps into FineMaps
     default: op
+  finemaps.importall:
+    description: Allows bulk importing all vanilla map_*.dat files into FineMaps
+    default: op
   finemaps.url:
     description: Allows creating maps from URLs
     default: op
@@ -56,6 +59,7 @@ permissions:
       finemaps.use: true
       finemaps.create: true
       finemaps.import: true
+      finemaps.importall: true
       finemaps.url: true
       finemaps.get: true
       finemaps.delete: true

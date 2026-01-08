@@ -7,6 +7,7 @@ import com.example.finemaps.core.config.FineMapsConfig;
 import com.example.finemaps.core.image.ImageProcessor;
 import com.example.finemaps.core.manager.MapManager;
 import com.example.finemaps.plugin.FineMapsPlugin;
+import com.example.finemaps.plugin.util.VanillaMapDatReader;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
@@ -18,12 +19,15 @@ import org.bukkit.map.MapCanvas;
 import org.bukkit.map.MapRenderer;
 import org.bukkit.map.MapView;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.World;
 
 import javax.imageio.ImageIO;
+import java.io.File;
 import java.awt.image.BufferedImage;
 import java.net.URL;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
@@ -60,6 +64,9 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             case "import":
             case "importvanilla":
                 return handleImportVanilla(sender, args);
+            case "importall":
+            case "importvanillaall":
+                return handleImportAllVanilla(sender, args);
             case "url":
             case "fromurl":
                 return handleFromUrl(sender, args);
@@ -90,6 +97,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                           ChatColor.GRAY + " - Create map from URL with a name");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps import [mapId] [name]" +
                           ChatColor.GRAY + " - Import a vanilla filled map (held or by id)");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps importall [world]" +
+                          ChatColor.GRAY + " - Import all vanilla map_*.dat files (optionally for one world)");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps get <name>" + 
                           ChatColor.GRAY + " - Get a map item by name");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps delete <name>" + 
@@ -220,6 +229,208 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         });
 
         return true;
+    }
+
+    private boolean handleImportAllVanilla(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(ChatColor.RED + "This command can only be used by players.");
+            return true;
+        }
+
+        Player player = (Player) sender;
+
+        if (!player.hasPermission("finemaps.importall")) {
+            player.sendMessage(ChatColor.RED + "You don't have permission to bulk-import vanilla maps.");
+            return true;
+        }
+
+        // Optional: /finemaps importall <world>
+        List<World> worlds;
+        if (args.length >= 2) {
+            World w = Bukkit.getWorld(args[1]);
+            if (w == null) {
+                player.sendMessage(ChatColor.RED + "Unknown world: " + args[1]);
+                return true;
+            }
+            worlds = Collections.singletonList(w);
+        } else {
+            worlds = new ArrayList<>(Bukkit.getWorlds());
+        }
+
+        // Collect files on main thread (world list is safe here).
+        List<MapFile> files = new ArrayList<>();
+        for (World w : worlds) {
+            File dataDir = new File(w.getWorldFolder(), "data");
+            File[] list = dataDir.listFiles();
+            if (list == null) continue;
+            for (File f : list) {
+                String name = f.getName();
+                if (!name.startsWith("map_") || !name.endsWith(".dat")) continue;
+                int id = parseVanillaMapId(name);
+                if (id < 0) continue;
+                files.add(new MapFile(w.getName(), f, id));
+            }
+        }
+
+        if (files.isEmpty()) {
+            player.sendMessage(ChatColor.YELLOW + "No vanilla map_*.dat files found to import.");
+            return true;
+        }
+
+        player.sendMessage(ChatColor.GOLD + "Found " + files.size() + " vanilla map files. Importing...");
+        player.sendMessage(ChatColor.GRAY + "This runs asynchronously; you can keep playing.");
+
+        AtomicInteger imported = new AtomicInteger();
+        AtomicInteger importedUnnamed = new AtomicInteger();
+        AtomicInteger skippedBad = new AtomicInteger();
+        AtomicInteger failed = new AtomicInteger();
+
+        // Import sequentially to avoid DB overload.
+        CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
+        for (MapFile mf : files) {
+            chain = chain.thenCompose(v -> CompletableFuture.supplyAsync(() -> {
+                try {
+                    Optional<byte[]> colorsOpt = VanillaMapDatReader.readColors(mf.file);
+                    if (!colorsOpt.isPresent()) return ImportResult.skipBad(mf, "no-colors");
+                    byte[] colors = colorsOpt.get();
+                    if (colors.length != MapData.TOTAL_PIXELS) return ImportResult.skipBad(mf, "bad-length=" + colors.length);
+                    return ImportResult.ok(mf, colors);
+                } catch (Exception e) {
+                    return ImportResult.fail(mf, e);
+                }
+            })).thenCompose(res -> {
+                if (res.kind != ImportResult.Kind.OK) {
+                    // Update counters and maybe log on main thread.
+                    if (res.kind == ImportResult.Kind.SKIP_BAD) {
+                        skippedBad.incrementAndGet();
+                    } else if (res.kind == ImportResult.Kind.FAIL) {
+                        failed.incrementAndGet();
+                    }
+                    maybeProgress(player, imported.get() + importedUnnamed.get() + skippedBad.get() + failed.get(), files.size());
+                    return CompletableFuture.completedFuture(null);
+                }
+
+                String desiredName = generateVanillaImportName(res.worldName, res.vanillaId);
+
+                return mapManager.isNameTaken("finemaps", desiredName).thenCompose(taken -> {
+                    String nameToUse = taken ? null : desiredName;
+                    return mapManager.createMapWithName("finemaps", res.colors, nameToUse).thenAccept(created -> {
+                        if (nameToUse != null) {
+                            imported.incrementAndGet();
+                        } else {
+                            importedUnnamed.incrementAndGet();
+                        }
+                        maybeProgress(player, imported.get() + importedUnnamed.get() + skippedBad.get() + failed.get(), files.size());
+                    });
+                }).exceptionally(err -> {
+                    failed.incrementAndGet();
+                    maybeProgress(player, imported.get() + importedUnnamed.get() + skippedBad.get() + failed.get(), files.size());
+                    return null;
+                });
+            });
+        }
+
+        chain.whenComplete((v, err) -> plugin.getServer().getScheduler().runTask(plugin, () -> {
+            if (err != null) {
+                player.sendMessage(ChatColor.RED + "Bulk import finished with errors: " + err.getMessage());
+            }
+            player.sendMessage(ChatColor.GREEN + "Vanilla map import complete.");
+            player.sendMessage(ChatColor.YELLOW + "Imported (named): " + ChatColor.WHITE + imported.get());
+            player.sendMessage(ChatColor.YELLOW + "Imported (unnamed due to name collision): " + ChatColor.WHITE + importedUnnamed.get());
+            player.sendMessage(ChatColor.YELLOW + "Skipped (unreadable/unsupported): " + ChatColor.WHITE + skippedBad.get());
+            player.sendMessage(ChatColor.YELLOW + "Failed: " + ChatColor.WHITE + failed.get());
+            player.sendMessage(ChatColor.GRAY + "Tip: use /finemaps get <name> for named imports (format: v_<world>_<id>).");
+        }));
+
+        return true;
+    }
+
+    private static final class MapFile {
+        final String worldName;
+        final File file;
+        final int vanillaId;
+        MapFile(String worldName, File file, int vanillaId) {
+            this.worldName = worldName;
+            this.file = file;
+            this.vanillaId = vanillaId;
+        }
+    }
+
+    private static final class ImportResult {
+        enum Kind { OK, SKIP_BAD, FAIL }
+        final Kind kind;
+        final String worldName;
+        final int vanillaId;
+        final File file;
+        final byte[] colors;
+
+        private ImportResult(Kind kind, String worldName, int vanillaId, File file, byte[] colors) {
+            this.kind = kind;
+            this.worldName = worldName;
+            this.vanillaId = vanillaId;
+            this.file = file;
+            this.colors = colors;
+        }
+
+        static ImportResult ok(MapFile mf, byte[] colors) {
+            return new ImportResult(Kind.OK, mf.worldName, mf.vanillaId, mf.file, colors);
+        }
+        static ImportResult skipBad(MapFile mf, String reason) {
+            return new ImportResult(Kind.SKIP_BAD, mf.worldName, mf.vanillaId, mf.file, null);
+        }
+        static ImportResult fail(MapFile mf, Exception e) {
+            return new ImportResult(Kind.FAIL, mf.worldName, mf.vanillaId, mf.file, null);
+        }
+    }
+
+    private void maybeProgress(Player player, int done, int total) {
+        if (player == null) return;
+        // Update every 100 maps and at the end.
+        if (done == total || done % 100 == 0) {
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                player.sendMessage(ChatColor.GRAY + "Import progress: " + done + "/" + total);
+            });
+        }
+    }
+
+    private int parseVanillaMapId(String filename) {
+        // map_123.dat
+        try {
+            if (!filename.startsWith("map_") || !filename.endsWith(".dat")) return -1;
+            String mid = filename.substring("map_".length(), filename.length() - ".dat".length());
+            return Integer.parseInt(mid);
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private String generateVanillaImportName(String worldName, int id) {
+        String prefix = "v_";
+        String cleanWorld = sanitizeName(worldName);
+        String idStr = String.valueOf(id);
+
+        // Name format: v_<world>_<id>, max 32 chars.
+        int maxWorldLen = 32 - prefix.length() - 1 - idStr.length(); // 1 for underscore
+        if (maxWorldLen <= 0) {
+            return prefix + idStr;
+        }
+        if (cleanWorld.length() > maxWorldLen) {
+            cleanWorld = cleanWorld.substring(0, maxWorldLen);
+        }
+        if (cleanWorld.isEmpty()) {
+            return prefix + idStr;
+        }
+        return prefix + cleanWorld + "_" + idStr;
+    }
+
+    private String sanitizeName(String s) {
+        if (s == null) return "";
+        // Keep same rules as art names elsewhere: letters/numbers/_/-
+        String cleaned = s.replaceAll("[^a-zA-Z0-9_-]", "_");
+        // Collapse repeated underscores a bit
+        cleaned = cleaned.replaceAll("_+", "_");
+        if (cleaned.length() > 32) cleaned = cleaned.substring(0, 32);
+        return cleaned;
     }
 
     /**
@@ -756,7 +967,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             return filterStartsWith(args[0], Arrays.asList(
-                "url", "get", "delete", "list", "info", "stats", "reload", "create", "debug", "import"
+                "url", "get", "delete", "list", "info", "stats", "reload", "create", "debug", "import", "importall"
             ));
         }
 
@@ -770,6 +981,12 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             }
             if (sub.equals("import") || sub.equals("importvanilla")) {
                 return Arrays.asList("<mapId>", "<name>");
+            }
+            if (sub.equals("importall") || sub.equals("importvanillaall")) {
+                // Suggest world names
+                List<String> worlds = Bukkit.getWorlds().stream().map(World::getName).collect(Collectors.toList());
+                worlds.add(0, "all");
+                return filterStartsWith(args[1], worlds);
             }
             if (sub.equals("get") || sub.equals("give") || sub.equals("delete") || 
                 sub.equals("remove") || sub.equals("info")) {
