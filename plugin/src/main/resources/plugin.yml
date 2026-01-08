@@ -17,10 +17,6 @@ commands:
     usage: /finemaps <subcommand>
     permission: finemaps.use
     aliases: [fm, maps]
-  debug:
-    description: FineMaps debug/load-testing commands
-    usage: /debug <seed|placemaps> ...
-    permission: finemaps.admin
 
 permissions:
   finemaps.use:
@@ -44,8 +40,11 @@ permissions:
   finemaps.info:
     description: Allows viewing map info
     default: op
-  finemaps.debug:
-    description: Allows toggling FineMaps debug inspect mode
+  finemaps.reload:
+    description: Allows reloading FineMaps configuration
+    default: op
+  finemaps.stats:
+    description: Allows viewing FineMaps statistics
     default: op
   finemaps.admin:
     description: Full admin access to FineMaps
@@ -58,7 +57,8 @@ permissions:
       finemaps.delete: true
       finemaps.list: true
       finemaps.info: true
-      finemaps.debug: true
+      finemaps.reload: true
+      finemaps.stats: true
   finemaps.unlimited:
     description: No limit on map creation
     default: op

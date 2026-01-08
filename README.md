@@ -36,24 +36,22 @@ A Minecraft server plugin that stores map pixel and palette data in a database (
 
 ### ProtocolLib Support
 
-ProtocolLib is **optional** but enables the virtual ID system for efficient map rendering. Without ProtocolLib, the plugin still stores unlimited maps in the database, but is limited to ~32,000 maps **loaded at the same time**.
+ProtocolLib is **optional**. When present, FineMaps can use packet interception for enhanced/advanced rendering features. Without ProtocolLib, FineMaps runs in “Bukkit mode” (no packet interception) and still supports database-backed maps normally.
 
 | Feature | With ProtocolLib | Without ProtocolLib |
 |---------|------------------|---------------------|
 | Database Storage | ✅ Unlimited | ✅ Unlimited |
-| Maps Loaded Simultaneously | ✅ Unlimited | ⚠️ ~32,000 max |
-| Per-Player Virtual IDs | ✅ Yes | ❌ No |
-| Map Packet Interception | ✅ Full control | ❌ Not available |
+| Map Packet Interception | ✅ Yes | ❌ No |
 | Multi-Block Maps | ✅ Full | ✅ Full |
 | Image Import | ✅ Full | ✅ Full |
 
-**Without ProtocolLib**: All versions from 1.12.2+ are supported using a universal Bukkit adapter with runtime reflection. No version-specific code needed - the plugin automatically detects server capabilities. The database can store unlimited maps, but only ~32,000 can be actively rendered at once (using real Minecraft map IDs).
+**Without ProtocolLib**: FineMaps will not intercept map packets. Everything else (database storage, creation, multi-block maps, URL import) still works.
 
 ## Installation
 
 1. Download the latest release from the releases page
 2. Place `FineMaps.jar` in your server's `plugins` folder
-3. (Optional) Install ProtocolLib for unlimited map support via virtual IDs
+3. (Optional) Install ProtocolLib for enhanced rendering features (packet interception)
 4. Restart your server
 5. Configure `plugins/FineMaps/config.yml` as needed
 
@@ -105,13 +103,23 @@ images:
 
 | Command | Description | Permission |
 |---------|-------------|------------|
-| `/finemaps url <url> [width] [height] [dither]` | Create map from URL | `finemaps.url` |
-| `/finemaps get <mapId>` | Get a map item by ID | `finemaps.get` |
-| `/finemaps delete <mapId>` | Delete a map | `finemaps.delete` |
+| `/finemaps url <name> <url> [width] [height] [dither]` | Create map from URL with a name | `finemaps.url` |
+| `/finemaps get <name>` | Get a map item by name | `finemaps.get` |
+| `/finemaps delete <name>` | Delete a map by name | `finemaps.delete` |
 | `/finemaps list [pluginId]` | List stored maps | `finemaps.list` |
-| `/finemaps info <mapId>` | Show map information | `finemaps.info` |
-| `/finemaps stats` | Show plugin statistics | `finemaps.admin` |
-| `/finemaps reload` | Reload configuration | `finemaps.admin` |
+| `/finemaps info <name>` | Show map information by name | `finemaps.info` |
+| `/finemaps stats` | Show plugin statistics | `finemaps.stats` |
+| `/finemaps reload` | Reload configuration | `finemaps.reload` |
+| `/finemaps debug <seed\|placemaps\|stop\|inspect> ...` | Admin debug/load-testing tools | `finemaps.admin` |
+
+### Debug / load testing
+
+All debug subcommands require `finemaps.admin`:
+
+- `/finemaps debug seed <num>`: seed `<num>` maps into the DB (plugin_id=`debug`)
+- `/finemaps debug placemaps <mapsPerSecond>`: place 2x2 walls continuously using the seeded maps
+- `/finemaps debug stop`: stop an active placement task
+- `/finemaps debug inspect [on|off|toggle]`: toggle stick right-click inspection output on item frames
 
 ## Permissions
 
@@ -124,6 +132,8 @@ images:
 | `finemaps.delete` | Delete maps | op |
 | `finemaps.list` | List maps | op |
 | `finemaps.info` | View map info | op |
+| `finemaps.reload` | Reload configuration | op |
+| `finemaps.stats` | View statistics | op |
 | `finemaps.admin` | Full admin access | op |
 | `finemaps.unlimited` | No map creation limit | op |
 | `finemaps.limit.<group>` | Use group-specific limit | false |
