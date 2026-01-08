@@ -61,9 +61,11 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                 return handleCreate(sender, args);
             case "debug":
                 return handleDebug(sender, label, args);
+            case "convert":
             case "import":
             case "importvanilla":
                 return handleImportVanilla(sender, args);
+            case "convertall":
             case "importall":
             case "importvanillaall":
                 return handleImportAllVanilla(sender, args);
@@ -95,8 +97,12 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(ChatColor.GOLD + "=== FineMaps Commands ===");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps url <name> <url> [width] [height] [dither]" + 
                           ChatColor.GRAY + " - Create map from URL with a name");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps convert [mapId] [name]" +
+                          ChatColor.GRAY + " - Convert/import a vanilla filled map (held or by id)");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps import [mapId] [name]" +
                           ChatColor.GRAY + " - Import a vanilla filled map (held or by id)");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps convertall [world]" +
+                          ChatColor.GRAY + " - Convert/import all vanilla map_*.dat files (optionally for one world)");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps importall [world]" +
                           ChatColor.GRAY + " - Import all vanilla map_*.dat files (optionally for one world)");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps get <name>" + 
@@ -967,7 +973,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             return filterStartsWith(args[0], Arrays.asList(
-                "url", "get", "delete", "list", "info", "stats", "reload", "create", "debug", "import", "importall"
+                "url", "get", "delete", "list", "info", "stats", "reload", "create", "debug",
+                "import", "importall", "convert", "convertall"
             ));
         }
 
@@ -982,7 +989,16 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             if (sub.equals("import") || sub.equals("importvanilla")) {
                 return Arrays.asList("<mapId>", "<name>");
             }
+            if (sub.equals("convert")) {
+                return Arrays.asList("<mapId>", "<name>");
+            }
             if (sub.equals("importall") || sub.equals("importvanillaall")) {
+                // Suggest world names
+                List<String> worlds = Bukkit.getWorlds().stream().map(World::getName).collect(Collectors.toList());
+                worlds.add(0, "all");
+                return filterStartsWith(args[1], worlds);
+            }
+            if (sub.equals("convertall")) {
                 // Suggest world names
                 List<String> worlds = Bukkit.getWorlds().stream().map(World::getName).collect(Collectors.toList());
                 worlds.add(0, "all");

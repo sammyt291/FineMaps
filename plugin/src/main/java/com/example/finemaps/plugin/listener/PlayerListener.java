@@ -4,6 +4,8 @@ import com.example.finemaps.core.manager.MapManager;
 import com.example.finemaps.core.manager.MultiBlockMapHandler;
 import com.example.finemaps.plugin.FineMapsPlugin;
 import org.bukkit.entity.Player;
+import org.bukkit.event.entity.EntityPickupItemEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -12,6 +14,7 @@ import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerItemHeldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerSwapHandItemsEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 
@@ -87,6 +90,59 @@ public class PlayerListener implements Listener {
         plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
             checkAndStartPreview(player);
         }, 1L);
+    }
+
+    /**
+     * If a stored map item is picked up into the currently-held slot, Bukkit does not fire
+     * {@link PlayerItemHeldEvent}. We re-check the held items after pickup to start the preview immediately.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onItemPickup(EntityPickupItemEvent event) {
+        if (!(event.getEntity() instanceof Player)) {
+            return;
+        }
+        Player player = (Player) event.getEntity();
+
+        ItemStack stack = event.getItem() != null ? event.getItem().getItemStack() : null;
+        if (stack == null || !mapManager.isStoredMap(stack)) {
+            return;
+        }
+
+        // Delay 1 tick so inventory changes are applied.
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> checkAndStartPreview(player), 1L);
+    }
+
+    /**
+     * Starting preview when maps are swapped between hands.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onSwapHands(PlayerSwapHandItemsEvent event) {
+        Player player = event.getPlayer();
+        // Delay 1 tick so the swap is applied.
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> checkAndStartPreview(player), 1L);
+    }
+
+    /**
+     * Covers inventory-click moves that place a stored map into the active slot without changing the held slot index.
+     * We only react when a stored map is involved to keep this lightweight.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player)) {
+            return;
+        }
+        Player player = (Player) event.getWhoClicked();
+
+        ItemStack cursor = event.getCursor();
+        ItemStack current = event.getCurrentItem();
+        boolean involvesStoredMap =
+            (cursor != null && mapManager.isStoredMap(cursor)) ||
+            (current != null && mapManager.isStoredMap(current));
+        if (!involvesStoredMap) {
+            return;
+        }
+
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> checkAndStartPreview(player), 1L);
     }
     
     @EventHandler(priority = EventPriority.HIGH)
