@@ -29,10 +29,15 @@ public class SQLiteDatabaseProvider extends AbstractDatabaseProvider {
         // SQLite specific settings
         config.setMaximumPoolSize(1); // SQLite doesn't support multiple connections well
         config.setConnectionTestQuery("SELECT 1");
-        config.addDataSourceProperty("journal_mode", "WAL");
-        config.addDataSourceProperty("synchronous", "NORMAL");
-        config.addDataSourceProperty("cache_size", "10000");
-        config.addDataSourceProperty("foreign_keys", "ON");
+        // NOTE:
+        // Do NOT set SQLite "dataSource properties" (journal_mode/synchronous/etc.) here.
+        // Legacy Bukkit/CB 1.7.10 ships an ancient org.sqlite driver which applies these via
+        // SQLiteConfig.apply() using Statement#executeBatch, and some PRAGMAs (eg journal_mode)
+        // return a result set -> "batch entry 0: query returns results" -> pool init fails.
+        //
+        // Using connectionInitSql is safe here because it is executed as a normal statement,
+        // and Hikari does not require the statement to be an update-only query.
+        config.setConnectionInitSql("PRAGMA foreign_keys=ON");
         
         return config;
     }
