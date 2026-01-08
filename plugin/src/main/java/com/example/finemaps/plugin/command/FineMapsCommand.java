@@ -1125,7 +1125,12 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                             resolveFfmpegPath()
                         );
                     } else {
-                        decoded = GenericImageDecoder.decode(downloaded, urlStr);
+                        decoded = GenericImageDecoder.decode(
+                            downloaded,
+                            urlStr,
+                            config.getImages().getMaxAnimatedFrames(),
+                            config.getPermissions().getMaxImportSize()
+                        );
                     }
                     if (decoded.frames == null || decoded.frames.isEmpty()) {
                         throw new IOException("Could not decode image");
@@ -1150,7 +1155,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                         processorThreads = config.getImages().getProcessorThreads();
                     } catch (Throwable ignored) {
                     }
-                    UrlCacheWriteResult cacheWrite = writeFramesAndColorsToCache(
+                    final int cachedFrameCount = writeFramesAndColorsToCache(
                         urlStr, downloaded, decoded, finalWidth, finalHeight, finalRaster, effectiveFps, processor, player, processorThreads
                     );
 
@@ -1181,27 +1186,25 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                     // Animated: create maps from first frame, then start runtime animation updates
                     if (finalWidth == 1 && finalHeight == 1) {
                         final int fpsFinal = effectiveFps;
-                        final List<byte[]> pixelFrames = cacheWrite.singleFramesPixels;
                         mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
-                            plugin.getAnimationRegistry().registerAndStartSingle(finalArtName, map.getId(), fpsFinal, pixelFrames);
+                            plugin.getAnimationRegistry().registerAndStartSingleFromCache(finalArtName, map.getId(), fpsFinal, urlStr, 1, 1, finalRaster);
                             plugin.getAnimationRegistry().persistSingleDefinition(finalArtName, urlStr, 1, 1, finalRaster, fpsFinal, map.getId());
                             plugin.getServer().getScheduler().runTask(plugin, () -> {
                                 mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
-                                player.sendMessage(ChatColor.GREEN + "Created animated map '" + finalArtName + "' (" + fpsFinal + " fps, " + pixelFrames.size() + " frames)");
+                                player.sendMessage(ChatColor.GREEN + "Created animated map '" + finalArtName + "' (" + fpsFinal + " fps, " + cachedFrameCount + " frames)");
                             });
                         });
                     } else {
                         final int fpsFinal = effectiveFps;
-                        final List<byte[][]> multiFrames = cacheWrite.multiFramesPixels;
                         mapManager.createMultiBlockMapWithName("finemaps", firstFrame, finalWidth, finalHeight, finalRaster, finalArtName)
                             .thenAccept(multiMap -> {
                                 List<Long> mapIds = tileOrderMapIds(multiMap, finalWidth, finalHeight);
-                                plugin.getAnimationRegistry().registerAndStartMulti(finalArtName, mapIds, finalWidth, finalHeight, fpsFinal, multiFrames);
+                                plugin.getAnimationRegistry().registerAndStartMultiFromCache(finalArtName, mapIds, finalWidth, finalHeight, fpsFinal, urlStr, finalRaster);
                                 plugin.getAnimationRegistry().persistMultiDefinition(finalArtName, urlStr, finalWidth, finalHeight, finalRaster, fpsFinal, multiMap.getGroupId());
                                 plugin.getServer().getScheduler().runTask(plugin, () -> {
                                     mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
                                     player.sendMessage(ChatColor.GREEN + "Created animated " + finalWidth + "x" + finalHeight +
-                                                      " map '" + finalArtName + "' (" + fpsFinal + " fps, " + multiFrames.size() + " frames)");
+                                                      " map '" + finalArtName + "' (" + fpsFinal + " fps, " + cachedFrameCount + " frames)");
                                 });
                             });
                     }
@@ -1865,26 +1868,16 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
     }
 
-    private static final class UrlCacheWriteResult {
-        final List<byte[]> singleFramesPixels;
-        final List<byte[][]> multiFramesPixels;
-
-        private UrlCacheWriteResult(List<byte[]> singleFramesPixels, List<byte[][]> multiFramesPixels) {
-            this.singleFramesPixels = singleFramesPixels;
-            this.multiFramesPixels = multiFramesPixels;
-        }
-    }
-
-    private UrlCacheWriteResult writeFramesAndColorsToCache(String urlStr,
-                                                            Path originalFile,
-                                                            AnimatedImage decoded,
-                                                            int width,
-                                                            int height,
-                                                            boolean raster,
-                                                            int fps,
-                                                            ImageProcessor processor,
-                                                            Player progressPlayer,
-                                                            int processorThreads) throws IOException {
+    private int writeFramesAndColorsToCache(String urlStr,
+                                           Path originalFile,
+                                           AnimatedImage decoded,
+                                           int width,
+                                           int height,
+                                           boolean raster,
+                                           int fps,
+                                           ImageProcessor processor,
+                                           Player progressPlayer,
+                                           int processorThreads) throws IOException {
         // Always write processed color frames to a stable, per-URL cache directory so animations
         // survive plugin reload/restart (even if "url cache" is disabled for original downloads).
         Path baseDir = UrlCache.cacheDirForUrl(plugin.getDataFolder(), config.getImages().getUrlCacheFolder(), urlStr);
@@ -1910,21 +1903,13 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         } catch (IOException ignored) {
         }
 
-        List<byte[]> singleFrames = width == 1 && height == 1 ? new ArrayList<>() : null;
-        List<byte[][]> multiFrames = width == 1 && height == 1 ? null : new ArrayList<>();
-
         final int totalFrames = (decoded.frames != null ? decoded.frames.size() : 0);
-        final int tileSize = com.example.finemaps.api.map.MapData.TOTAL_PIXELS;
         final boolean writePngFrames = config.getImages().isUrlCacheEnabled();
 
         final AtomicInteger completed = new AtomicInteger(0);
         final AtomicLong lastUpdateMs = new AtomicLong(0L);
         final AtomicInteger lastPercent = new AtomicInteger(-1);
         final Object progressLock = new Object();
-
-        // Keep results in-frame-order even when processed in parallel.
-        final byte[][] singleByIndex = (width == 1 && height == 1) ? new byte[totalFrames][] : null;
-        final byte[][][] multiByIndex = (width == 1 && height == 1) ? null : new byte[totalFrames][][];
 
         int threads = resolveProcessorThreads(processorThreads, totalFrames);
         ExecutorService exec = null;
@@ -1954,21 +1939,17 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
                         if (width == 1 && height == 1) {
                             byte[] pixels = processor.processSingleMap(frame, raster);
-                            singleByIndex[idx] = pixels;
                             Files.write(colorsDir.resolve(String.format(Locale.ROOT, "frame_%04d.bin", idx)), pixels);
                         } else {
                             byte[][] tiles = processor.processImage(frame, width, height, raster);
-                            multiByIndex[idx] = tiles;
 
-                            // Write concatenated tiles
+                            // Write concatenated tiles without buffering the whole frame in memory
                             Path out = colorsDir.resolve(String.format(Locale.ROOT, "frame_%04d.bin", idx));
-                            byte[] all = new byte[tiles.length * tileSize];
-                            int off = 0;
-                            for (byte[] t : tiles) {
-                                System.arraycopy(t, 0, all, off, tileSize);
-                                off += tileSize;
+                            try (java.io.OutputStream os = Files.newOutputStream(out)) {
+                                for (byte[] t : tiles) {
+                                    if (t != null) os.write(t);
+                                }
                             }
-                            Files.write(out, all);
                         }
                     } catch (IOException ioe) {
                         throw new RuntimeException(ioe);
@@ -2006,19 +1987,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
         // Final 100% update.
         maybeSendRasterProgress(progressPlayer, totalFrames, totalFrames, lastUpdateMs, lastPercent, progressLock);
-
-        if (singleFrames != null) {
-            for (int i = 0; i < totalFrames; i++) {
-                if (singleByIndex[i] != null) singleFrames.add(singleByIndex[i]);
-            }
-        } else if (multiFrames != null) {
-            for (int i = 0; i < totalFrames; i++) {
-                if (multiByIndex[i] != null) multiFrames.add(multiByIndex[i]);
-            }
-        }
-
-        return new UrlCacheWriteResult(singleFrames != null ? singleFrames : new ArrayList<>(),
-            multiFrames != null ? multiFrames : new ArrayList<>());
+        return totalFrames;
     }
 
     private int resolveProcessorThreads(int configured, int totalFrames) {
