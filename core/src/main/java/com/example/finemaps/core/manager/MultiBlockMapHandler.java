@@ -525,6 +525,29 @@ public class MultiBlockMapHandler {
             default: return Rotation.NONE;
         }
     }
+
+    private int quarterTurnsFromFrameRotation(Rotation rotation) {
+        if (rotation == null) return 0;
+        try {
+            return rotation.ordinal() % 4;
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /**
+     * Maps quarter-turns (0..3) to a Bukkit Rotation constant that produces the correct 90° steps for maps.
+     * We intentionally use the first 4 enum constants; see {@link #rotationForFloorCeiling(BlockFace, boolean)}.
+     */
+    private Rotation frameRotationFromQuarterTurns(int quarterTurns) {
+        switch (quarterTurns & 3) {
+            case 0: return Rotation.NONE;
+            case 1: return Rotation.CLOCKWISE_45;   // maps: visually 90°
+            case 2: return Rotation.CLOCKWISE;      // maps: visually 180°
+            case 3: return Rotation.CLOCKWISE_135;  // maps: visually 270°
+            default: return Rotation.NONE;
+        }
+    }
     
     /**
      * Shows particle outline for placement preview.
@@ -883,6 +906,7 @@ public class MultiBlockMapHandler {
             BlockFace desiredUp = getHorizontalFacing(player.getLocation().getYaw());
             floorCeilingRotation = rotationForFloorCeiling(desiredUp, facing == BlockFace.DOWN);
         }
+        int rotQt = (normalizeRotationDegrees(rotationDeg) / 90) & 3;
 
         World world = clickedFrame.getWorld();
         Collection<Player> nearbyPlayers = world.getNearbyEntities(clickedFrame.getLocation(), 64, 64, 64).stream()
@@ -913,15 +937,19 @@ public class MultiBlockMapHandler {
 
                 frame.setItem(mapItem);
 
-                if (floorCeilingRotation != null) {
-                    try {
-                        frame.setRotation(floorCeilingRotation);
-                    } catch (Throwable ignored) {
-                    }
-                    try {
-                        frame.setRotation(floorCeilingRotation);
-                    } catch (Throwable ignored) {
-                    }
+                // Apply rotation after item is set (some implementations reset rotation).
+                Rotation base = (facing == BlockFace.UP || facing == BlockFace.DOWN)
+                    ? floorCeilingRotation
+                    : Rotation.NONE;
+                int baseQt = quarterTurnsFromFrameRotation(base);
+                Rotation finalRot = frameRotationFromQuarterTurns(baseQt + rotQt);
+                try {
+                    frame.setRotation(finalRot);
+                } catch (Throwable ignored) {
+                }
+                try {
+                    frame.setRotation(finalRot);
+                } catch (Throwable ignored) {
                 }
 
                 recordPlacementAt(frame, groupId, instanceId, PlacementMode.EXISTING_FRAMES, x + ":" + y, rotationDeg);
@@ -1467,6 +1495,7 @@ public class MultiBlockMapHandler {
                 : BlockFace.NORTH;
             floorCeilingRotation = rotationForFloorCeiling(desiredUp, facing == BlockFace.DOWN);
         }
+        int rotQt = (normalizeRotationDegrees(rot) / 90) & 3;
 
         long instanceId = newInstanceId();
         instanceToGroup.put(instanceId, groupId);
@@ -1506,16 +1535,19 @@ public class MultiBlockMapHandler {
                 // Make invisible to show just the map
                 frame.setVisible(false);
 
-                // Apply floor/ceiling rotation last (some implementations reset it when setting item/fixed).
-                if (floorCeilingRotation != null) {
-                    try {
-                        frame.setRotation(floorCeilingRotation);
-                    } catch (Throwable ignored) {
-                    }
-                    try {
-                        frame.setRotation(floorCeilingRotation);
-                    } catch (Throwable ignored) {
-                    }
+                // Apply final rotation last (some implementations reset it when setting item/fixed).
+                Rotation base = (facing == BlockFace.UP || facing == BlockFace.DOWN)
+                    ? floorCeilingRotation
+                    : Rotation.NONE;
+                int baseQt = quarterTurnsFromFrameRotation(base);
+                Rotation finalRot = frameRotationFromQuarterTurns(baseQt + rotQt);
+                try {
+                    frame.setRotation(finalRot);
+                } catch (Throwable ignored) {
+                }
+                try {
+                    frame.setRotation(finalRot);
+                } catch (Throwable ignored) {
                 }
                 
                 // Store placement markers on the entity PDC and track placement
