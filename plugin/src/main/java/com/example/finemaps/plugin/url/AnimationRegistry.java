@@ -499,6 +499,7 @@ public final class AnimationRegistry {
             if (!isMulti) {
                 if (singleFrames == null || singleFrames.isEmpty()) return;
                 byte[] frame = singleFrames.get(idx % singleFrames.size());
+                if (frame == null || frame.length != com.example.finemaps.api.map.MapData.TOTAL_PIXELS) return;
                 // Always update in-memory pixels (keeps compatibility with the MapRenderer path).
                 mapManager.updateMapPixelsRuntime(singleMapId, frame);
                 // If ProtocolLib is present, push packets to viewers (smooth in-world playback).
@@ -516,6 +517,7 @@ public final class AnimationRegistry {
             for (int i = 0; i < expectedTiles; i++) {
                 long mapId = multiMapIds.get(i);
                 byte[] pixels = tiles[i];
+                if (pixels == null || pixels.length != com.example.finemaps.api.map.MapData.TOTAL_PIXELS) continue;
                 mapManager.updateMapPixelsRuntime(mapId, pixels);
                 pushToViewers(mapId, pixels);
             }
@@ -758,8 +760,31 @@ public final class AnimationRegistry {
                 if (p != null && Files.isRegularFile(p)) files.add(p);
             }
         }
-        files.sort(java.util.Comparator.comparing(p -> String.valueOf(p.getFileName())));
+        files.sort((a, b) -> {
+            int ia = parseFrameIndex(a != null ? a.getFileName().toString() : null);
+            int ib = parseFrameIndex(b != null ? b.getFileName().toString() : null);
+            if (ia != Integer.MIN_VALUE && ib != Integer.MIN_VALUE) {
+                return Integer.compare(ia, ib);
+            }
+            return String.valueOf(a != null ? a.getFileName() : "").compareTo(String.valueOf(b != null ? b.getFileName() : ""));
+        });
         return files;
+    }
+
+    private int parseFrameIndex(String filename) {
+        if (filename == null) return Integer.MIN_VALUE;
+        // frame_0000.bin / frame_10000.bin
+        int us = filename.indexOf('_');
+        int dot = filename.lastIndexOf('.');
+        if (us < 0) return Integer.MIN_VALUE;
+        if (dot < 0) dot = filename.length();
+        if (dot <= us + 1) return Integer.MIN_VALUE;
+        String mid = filename.substring(us + 1, dot);
+        try {
+            return Integer.parseInt(mid);
+        } catch (NumberFormatException e) {
+            return Integer.MIN_VALUE;
+        }
     }
 
     private static final class DiskSingleFrameList extends java.util.AbstractList<byte[]> implements java.util.RandomAccess {
