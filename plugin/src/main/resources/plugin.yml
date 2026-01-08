@@ -53,6 +53,9 @@ permissions:
   finemaps.stats:
     description: Allows viewing FineMaps statistics
     default: op
+  finemaps.anim:
+    description: Allows controlling animated maps (/finemaps anim)
+    default: op
   finemaps.buy:
     description: Allows purchasing map arts (/finemaps buy and GUI buy)
     default: true
@@ -77,6 +80,7 @@ permissions:
       finemaps.info: true
       finemaps.reload: true
       finemaps.stats: true
+      finemaps.anim: true
       finemaps.buy: true
       finemaps.gui: true
       finemaps.config: true

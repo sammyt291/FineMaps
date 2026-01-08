@@ -94,7 +94,8 @@ public class FineMapsPlugin extends JavaPlugin {
         // Initialize managers
         mapManager = new MapManager(this, config, database, nmsAdapter);
         multiBlockHandler = new MultiBlockMapHandler(this, mapManager);
-        animationRegistry = new AnimationRegistry(this, mapManager);
+        String cacheFolder = (config != null && config.getImages() != null) ? config.getImages().getUrlCacheFolder() : "url-cache";
+        animationRegistry = new AnimationRegistry(this, mapManager, cacheFolder);
 
         // Hook Vault (optional, only used if enabled in config)
         setupEconomy();
@@ -110,6 +111,15 @@ public class FineMapsPlugin extends JavaPlugin {
         
         // Start cleanup task
         startCleanupTask();
+
+        // Restore persisted animations (if any)
+        try {
+            if (animationRegistry != null) {
+                animationRegistry.loadAndStartPersisted();
+            }
+        } catch (Throwable t) {
+            getLogger().log(Level.WARNING, "Failed to restore persisted animations", t);
+        }
         
         getLogger().info("FineMaps enabled successfully!");
         getLogger().info("Database type: " + (config.getDatabase().isMySQL() ? "MySQL" : "SQLite"));
@@ -137,9 +147,13 @@ public class FineMapsPlugin extends JavaPlugin {
     public void onDisable() {
         // Unregister API
         FineMapsAPIProvider.unregister();
-        
-        // Stop animations before tearing down map systems
+
+        // Persist animation state, then stop animations before tearing down map systems
         if (animationRegistry != null) {
+            try {
+                animationRegistry.savePersistedState();
+            } catch (Throwable ignored) {
+            }
             animationRegistry.stopAll();
         }
 

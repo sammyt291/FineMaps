@@ -113,6 +113,9 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                 return handleReload(sender);
             case "stats":
                 return handleStats(sender);
+            case "anim":
+            case "animation":
+                return handleAnim(sender, args);
             default:
                 sender.sendMessage(ChatColor.RED + "Unknown subcommand: " + subCommand);
                 sendHelp(sender);
@@ -150,6 +153,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                           ChatColor.GRAY + " - Show statistics");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps reload" + 
                           ChatColor.GRAY + " - Reload config");
+        sender.sendMessage(ChatColor.YELLOW + "/finemaps anim <restart|pause|skip <time>>" +
+                          ChatColor.GRAY + " - Control an animated map (held or looked-at frame)");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps debug <seed|placemaps|stop|inspect>" +
                           ChatColor.GRAY + " - Admin debug/load-test tools");
     }
@@ -1147,6 +1152,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                         final List<byte[]> pixelFrames = cacheWrite.singleFramesPixels;
                         mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
                             plugin.getAnimationRegistry().registerAndStartSingle(finalArtName, map.getId(), fpsFinal, pixelFrames);
+                            plugin.getAnimationRegistry().persistSingleDefinition(finalArtName, urlStr, 1, 1, finalRaster, fpsFinal, map.getId());
                             plugin.getServer().getScheduler().runTask(plugin, () -> {
                                 mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
                                 player.sendMessage(ChatColor.GREEN + "Created animated map '" + finalArtName + "' (" + fpsFinal + " fps, " + pixelFrames.size() + " frames)");
@@ -1159,6 +1165,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                             .thenAccept(multiMap -> {
                                 List<Long> mapIds = tileOrderMapIds(multiMap, finalWidth, finalHeight);
                                 plugin.getAnimationRegistry().registerAndStartMulti(finalArtName, mapIds, finalWidth, finalHeight, fpsFinal, multiFrames);
+                                plugin.getAnimationRegistry().persistMultiDefinition(finalArtName, urlStr, finalWidth, finalHeight, finalRaster, fpsFinal, multiMap.getGroupId());
                                 plugin.getServer().getScheduler().runTask(plugin, () -> {
                                     mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
                                     player.sendMessage(ChatColor.GREEN + "Created animated " + finalWidth + "x" + finalHeight +
@@ -1418,11 +1425,178 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    private boolean handleAnim(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(ChatColor.RED + "This command can only be used by players.");
+            return true;
+        }
+        Player player = (Player) sender;
+        if (!player.hasPermission("finemaps.anim")) {
+            player.sendMessage(ChatColor.RED + "You don't have permission to control animations.");
+            return true;
+        }
+        if (args.length < 2) {
+            player.sendMessage(ChatColor.RED + "Usage: /finemaps anim <restart|pause|skip <time>>");
+            return true;
+        }
+
+        long targetMapId = resolveTargetDbMapId(player);
+        if (targetMapId <= 0) {
+            player.sendMessage(ChatColor.RED + "Hold a FineMaps animated map, or look at an item frame with one.");
+            return true;
+        }
+
+        String action = args[1].toLowerCase(Locale.ROOT);
+        switch (action) {
+            case "restart": {
+                boolean ok = plugin.getAnimationRegistry().restartByDbMapId(targetMapId);
+                if (!ok) {
+                    player.sendMessage(ChatColor.RED + "That map is not currently animated.");
+                    return true;
+                }
+                plugin.getAnimationRegistry().savePersistedState();
+                player.sendMessage(ChatColor.GREEN + "Animation restarted.");
+                return true;
+            }
+            case "pause": {
+                Boolean paused = plugin.getAnimationRegistry().togglePauseByDbMapId(targetMapId);
+                if (paused == null) {
+                    player.sendMessage(ChatColor.RED + "That map is not currently animated.");
+                    return true;
+                }
+                plugin.getAnimationRegistry().savePersistedState();
+                player.sendMessage(paused ? (ChatColor.YELLOW + "Animation paused.") : (ChatColor.GREEN + "Animation resumed."));
+                return true;
+            }
+            case "skip": {
+                if (args.length < 3) {
+                    player.sendMessage(ChatColor.RED + "Usage: /finemaps anim skip <h:m:s | m:s | s>");
+                    return true;
+                }
+                long ms = parseHmsToMillis(args[2]);
+                if (ms == 0) {
+                    player.sendMessage(ChatColor.RED + "Invalid time: " + args[2]);
+                    player.sendMessage(ChatColor.GRAY + "Example: 10  |  1:30  |  0:02:15");
+                    return true;
+                }
+                boolean ok = plugin.getAnimationRegistry().skipByDbMapId(targetMapId, ms);
+                if (!ok) {
+                    player.sendMessage(ChatColor.RED + "That map is not currently animated.");
+                    return true;
+                }
+                plugin.getAnimationRegistry().savePersistedState();
+                player.sendMessage(ChatColor.GREEN + "Skipped forward " + formatMillisShort(ms) + ".");
+                return true;
+            }
+            default:
+                player.sendMessage(ChatColor.RED + "Usage: /finemaps anim <restart|pause|skip <time>>");
+                return true;
+        }
+    }
+
+    private long resolveTargetDbMapId(Player player) {
+        if (player == null) return -1;
+
+        // 1) Try looked-at item frame (best UX for placed maps).
+        ItemStack frameItem = getLookedAtItemFrameItem(player, 5.0);
+        if (frameItem != null && mapManager.isStoredMap(frameItem)) {
+            long id = mapManager.getMapIdFromItem(frameItem);
+            if (id > 0) return id;
+        }
+
+        // 2) Fall back to held items.
+        ItemStack main = player.getInventory().getItemInMainHand();
+        if (main != null && mapManager.isStoredMap(main)) {
+            long id = mapManager.getMapIdFromItem(main);
+            if (id > 0) return id;
+        }
+        ItemStack off = player.getInventory().getItemInOffHand();
+        if (off != null && mapManager.isStoredMap(off)) {
+            long id = mapManager.getMapIdFromItem(off);
+            if (id > 0) return id;
+        }
+        return -1;
+    }
+
+    private ItemStack getLookedAtItemFrameItem(Player player, double maxDistance) {
+        if (player == null) return null;
+        try {
+            // Use rayTraceEntities when available (keep reflective for compatibility across forks).
+            java.lang.reflect.Method m = player.getClass().getMethod("rayTraceEntities", double.class);
+            Object rtr = m.invoke(player, maxDistance);
+            if (rtr != null) {
+                java.lang.reflect.Method getHitEntity = rtr.getClass().getMethod("getHitEntity");
+                Object hit = getHitEntity.invoke(rtr);
+                if (hit instanceof org.bukkit.entity.ItemFrame) {
+                    return ((org.bukkit.entity.ItemFrame) hit).getItem();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // Fallback: nearest item frame in view cone.
+        org.bukkit.util.Vector eye = player.getEyeLocation().toVector();
+        org.bukkit.util.Vector dir = player.getEyeLocation().getDirection().normalize();
+        double bestDistSq = maxDistance * maxDistance;
+        org.bukkit.entity.ItemFrame best = null;
+
+        for (org.bukkit.entity.Entity e : player.getNearbyEntities(maxDistance, maxDistance, maxDistance)) {
+            if (!(e instanceof org.bukkit.entity.ItemFrame)) continue;
+            if (!player.hasLineOfSight(e)) continue;
+            org.bukkit.util.Vector to = e.getLocation().add(0.0, 0.5, 0.0).toVector().subtract(eye);
+            double distSq = to.lengthSquared();
+            if (distSq > bestDistSq) continue;
+            double dot = to.normalize().dot(dir);
+            if (dot < 0.975) continue; // ~12.5 degrees cone
+            bestDistSq = distSq;
+            best = (org.bukkit.entity.ItemFrame) e;
+        }
+        return best != null ? best.getItem() : null;
+    }
+
+    private long parseHmsToMillis(String raw) {
+        if (raw == null) return 0L;
+        String s = raw.trim();
+        if (s.isEmpty()) return 0L;
+        String[] parts = s.split(":");
+        try {
+            long h = 0, m = 0, sec = 0;
+            if (parts.length == 3) {
+                h = Long.parseLong(parts[0]);
+                m = Long.parseLong(parts[1]);
+                sec = Long.parseLong(parts[2]);
+            } else if (parts.length == 2) {
+                m = Long.parseLong(parts[0]);
+                sec = Long.parseLong(parts[1]);
+            } else if (parts.length == 1) {
+                sec = Long.parseLong(parts[0]);
+            } else {
+                return 0L;
+            }
+            if (h < 0 || m < 0 || sec < 0) return 0L;
+            long totalSec = (h * 3600L) + (m * 60L) + sec;
+            if (totalSec <= 0) return 0L;
+            return totalSec * 1000L;
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
+    }
+
+    private String formatMillisShort(long ms) {
+        long totalSec = Math.max(0L, ms / 1000L);
+        long h = totalSec / 3600L;
+        long m = (totalSec % 3600L) / 60L;
+        long s = totalSec % 60L;
+        if (h > 0) return h + "h" + m + "m" + s + "s";
+        if (m > 0) return m + "m" + s + "s";
+        return s + "s";
+    }
+
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             return filterStartsWith(args[0], Arrays.asList(
-                "url", "get", "delete", "list", "info", "stats", "reload", "create", "debug",
+                "url", "get", "delete", "list", "info", "stats", "reload", "create", "debug", "anim",
                 "import", "importall", "convert", "convertall"
                 , "buy", "gui", "config"
             ));
@@ -1435,6 +1609,9 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             }
             if (sub.equals("config")) {
                 return filterStartsWith(args[1], Arrays.asList("get", "set", "reset"));
+            }
+            if (sub.equals("anim") || sub.equals("animation")) {
+                return filterStartsWith(args[1], Arrays.asList("restart", "pause", "skip"));
             }
             if (sub.equals("url") || sub.equals("fromurl")) {
                 return Collections.singletonList("<url>");
@@ -1469,6 +1646,12 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         if (args.length >= 3 && args[0].equalsIgnoreCase("debug")) {
             String[] debugArgs = Arrays.copyOfRange(args, 1, args.length);
             return debugCommand.tabComplete(debugArgs);
+        }
+
+        if (args.length >= 3 && (args[0].equalsIgnoreCase("anim") || args[0].equalsIgnoreCase("animation"))) {
+            if (args.length == 3 && args[1].equalsIgnoreCase("skip")) {
+                return Collections.singletonList("<time>");
+            }
         }
 
         if (args.length >= 3 && (args[0].equalsIgnoreCase("url") || args[0].equalsIgnoreCase("fromurl"))) {
@@ -1600,10 +1783,9 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                                                             boolean raster,
                                                             int fps,
                                                             ImageProcessor processor) throws IOException {
+        // Always write processed color frames to a stable, per-URL cache directory so animations
+        // survive plugin reload/restart (even if "url cache" is disabled for original downloads).
         Path baseDir = UrlCache.cacheDirForUrl(plugin.getDataFolder(), config.getImages().getUrlCacheFolder(), urlStr);
-        if (!config.getImages().isUrlCacheEnabled()) {
-            baseDir = plugin.getDataFolder().toPath().resolve("tmp-url");
-        }
 
         Path variantDir = baseDir.resolve(String.format(Locale.ROOT, "variant_%dx%d_r%s_fps%d", width, height, raster ? "1" : "0", fps));
 
@@ -1645,24 +1827,22 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             if (width == 1 && height == 1) {
                 byte[] pixels = processor.processSingleMap(frame, raster);
                 singleFrames.add(pixels);
-                if (config.getImages().isUrlCacheEnabled()) {
-                    Files.write(colorsDir.resolve(String.format(Locale.ROOT, "frame_%04d.bin", i)), pixels);
-                }
+                // Always write processed colors for persistence / restart recovery.
+                Files.write(colorsDir.resolve(String.format(Locale.ROOT, "frame_%04d.bin", i)), pixels);
             } else {
                 byte[][] tiles = processor.processImage(frame, width, height, raster);
                 multiFrames.add(tiles);
-                if (config.getImages().isUrlCacheEnabled()) {
-                    // Write concatenated tiles
-                    Path out = colorsDir.resolve(String.format(Locale.ROOT, "frame_%04d.bin", i));
-                    int tileSize = com.example.finemaps.api.map.MapData.TOTAL_PIXELS;
-                    byte[] all = new byte[tiles.length * tileSize];
-                    int off = 0;
-                    for (byte[] t : tiles) {
-                        System.arraycopy(t, 0, all, off, tileSize);
-                        off += tileSize;
-                    }
-                    Files.write(out, all);
+                // Always write processed colors for persistence / restart recovery.
+                // Write concatenated tiles
+                Path out = colorsDir.resolve(String.format(Locale.ROOT, "frame_%04d.bin", i));
+                int tileSize = com.example.finemaps.api.map.MapData.TOTAL_PIXELS;
+                byte[] all = new byte[tiles.length * tileSize];
+                int off = 0;
+                for (byte[] t : tiles) {
+                    System.arraycopy(t, 0, all, off, tileSize);
+                    off += tileSize;
                 }
+                Files.write(out, all);
             }
         }
 
