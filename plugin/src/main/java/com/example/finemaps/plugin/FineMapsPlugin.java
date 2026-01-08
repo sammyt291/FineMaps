@@ -34,6 +34,12 @@ import java.util.logging.Level;
 public class FineMapsPlugin extends JavaPlugin {
 
     private static FineMapsPlugin instance;
+
+    /**
+     * FineMaps uses Bukkit APIs introduced in 1.14+ (e.g. PersistentDataContainer).
+     * On older servers the plugin must disable early to avoid classloading errors.
+     */
+    private static final int MIN_SUPPORTED_MAJOR = 14;
     
     private FineMapsConfig config;
     private DatabaseProvider database;
@@ -50,6 +56,12 @@ public class FineMapsPlugin extends JavaPlugin {
         // Check dependencies
         if (!checkDependencies()) {
             getLogger().severe("Missing required dependencies! Disabling plugin.");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+
+        // Fail fast on unsupported (too old) server versions to avoid NoClassDefFoundError crashes.
+        if (!checkSupportedServerVersion()) {
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
@@ -93,6 +105,32 @@ public class FineMapsPlugin extends JavaPlugin {
         getLogger().info("FineMaps enabled successfully!");
         getLogger().info("Database type: " + (config.getDatabase().isMySQL() ? "MySQL" : "SQLite"));
         getLogger().info("Max virtual IDs: " + config.getMaps().getMaxVirtualIds());
+    }
+
+    private boolean checkSupportedServerVersion() {
+        String version = Bukkit.getBukkitVersion();
+        int major = 0;
+        int minor = 0;
+
+        // Expected formats include:
+        // - "1.21.1-R0.1-SNAPSHOT"
+        // - "1.7.10-R0.1-SNAPSHOT"
+        try {
+            String[] parts = version.split("[.\\-]");
+            if (parts.length > 1) major = Integer.parseInt(parts[1]);
+            if (parts.length > 2) minor = Integer.parseInt(parts[2]);
+        } catch (Exception ignored) {
+            // If parsing fails, let the plugin try to run; adapter creation will still guard.
+            return true;
+        }
+
+        if (major < MIN_SUPPORTED_MAJOR) {
+            getLogger().severe("FineMaps requires Minecraft 1." + MIN_SUPPORTED_MAJOR + "+.");
+            getLogger().severe("Detected server version: " + version + " (1." + major + "." + minor + ").");
+            getLogger().severe("Please update your server or use an older FineMaps version built for legacy servers.");
+            return false;
+        }
+        return true;
     }
 
     @Override

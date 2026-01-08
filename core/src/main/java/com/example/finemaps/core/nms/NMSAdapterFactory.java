@@ -23,6 +23,15 @@ public final class NMSAdapterFactory {
         String version = getServerVersion();
         logger.info("Detected server version: " + version);
 
+        // FineMaps relies on Bukkit APIs introduced in 1.14+ (e.g. PersistentDataContainer).
+        // On older servers we'd otherwise crash with NoClassDefFoundError during classloading.
+        int major = getMajorVersion();
+        if (major > 0 && major < 14) {
+            throw new UnsupportedOperationException(
+                "FineMaps requires Minecraft 1.14+ (detected: " + Bukkit.getBukkitVersion() + ")."
+            );
+        }
+
         // Check for Folia
         boolean isFolia = isFolia();
         if (isFolia) {
