@@ -3,6 +3,9 @@ package com.example.finemaps.plugin.listener;
 import com.example.finemaps.core.manager.MapManager;
 import com.example.finemaps.core.manager.MultiBlockMapHandler;
 import com.example.finemaps.plugin.FineMapsPlugin;
+import net.md_5.bungee.api.ChatMessageType;
+import net.md_5.bungee.api.chat.TextComponent;
+import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
@@ -169,11 +172,45 @@ public class PlayerListener implements Listener {
         if (item == null || !mapManager.isStoredMap(item)) {
             return;
         }
+
+        // Sneak + right click rotates multi-block map items instead of placing.
+        if (player.isSneaking() && mapManager.getGroupIdFromItem(item) > 0) {
+            event.setCancelled(true);
+
+            boolean rotated = mapManager.rotateMultiBlockItem(item);
+            if (rotated) {
+                // Ensure the mutated stack is written back to the correct hand.
+                if (event.getHand() == EquipmentSlot.OFF_HAND) {
+                    player.getInventory().setItemInOffHand(item);
+                } else {
+                    player.getInventory().setItemInMainHand(item);
+                }
+                player.updateInventory();
+
+                int rot = mapManager.getMultiBlockRotationDegrees(item);
+                sendActionBar(player, ChatColor.YELLOW + "Rotation: " + ChatColor.WHITE + rot + "\u00B0");
+            }
+            return;
+        }
         
         // This is a stored map - try to place it using the placement system
         event.setCancelled(true);
 
         multiBlockHandler.tryPlaceStoredMap(player, item, event.getHand());
+    }
+
+    private void sendActionBar(Player player, String message) {
+        if (player == null || message == null) return;
+        try {
+            player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(message));
+            return;
+        } catch (Throwable ignored) {
+        }
+        // Fallback: chat message (best-effort)
+        try {
+            player.sendMessage(message);
+        } catch (Throwable ignored) {
+        }
     }
     
     /**
@@ -189,6 +226,8 @@ public class PlayerListener implements Listener {
         ItemStack held = (main != null && mapManager.isStoredMap(main)) ? main :
                          (off != null && mapManager.isStoredMap(off)) ? off : null;
         if (held != null) {
+            // Upgrade held multi-block items to show rotation in lore.
+            mapManager.ensureMultiBlockItemLore(held);
             // Start preview for stored map (single or multi-block)
             multiBlockHandler.startPreviewTask(player);
         }

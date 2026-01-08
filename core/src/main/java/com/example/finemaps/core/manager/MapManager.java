@@ -56,6 +56,9 @@ public class MapManager implements FineMapsAPI {
     // NBT key for storing our map ID
     private final NamespacedKey mapIdKey;
     private final NamespacedKey groupIdKey;
+    private final NamespacedKey widthKey;
+    private final NamespacedKey heightKey;
+    private final NamespacedKey rotationKey;
     
     // Track chunk loading to prevent loops
     private final Set<String> processingChunks = Collections.newSetFromMap(new ConcurrentHashMap<>());
@@ -84,6 +87,9 @@ public class MapManager implements FineMapsAPI {
         );
         this.mapIdKey = new NamespacedKey(plugin, "finemaps_id");
         this.groupIdKey = new NamespacedKey(plugin, "finemaps_group");
+        this.widthKey = new NamespacedKey(plugin, "finemaps_width");
+        this.heightKey = new NamespacedKey(plugin, "finemaps_height");
+        this.rotationKey = new NamespacedKey(plugin, "finemaps_rotation");
     }
 
     /**
@@ -505,8 +511,9 @@ public class MapManager implements FineMapsAPI {
             
             // Store group ID and dimensions
             pdc.set(groupIdKey, PersistentDataType.LONG, groupId);
-            pdc.set(new NamespacedKey(plugin, "finemaps_width"), PersistentDataType.INTEGER, multiMap.getWidth());
-            pdc.set(new NamespacedKey(plugin, "finemaps_height"), PersistentDataType.INTEGER, multiMap.getHeight());
+            pdc.set(widthKey, PersistentDataType.INTEGER, multiMap.getWidth());
+            pdc.set(heightKey, PersistentDataType.INTEGER, multiMap.getHeight());
+            pdc.set(rotationKey, PersistentDataType.INTEGER, 0);
             
             // Set display name showing only the art name (size stays in lore)
             if (displayName != null) {
@@ -515,14 +522,7 @@ public class MapManager implements FineMapsAPI {
                 meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map");
             }
             
-            // Add lore with info
-            List<String> lore = new ArrayList<>();
-            lore.add(org.bukkit.ChatColor.GRAY + "Size: " + multiMap.getWidth() + "x" + multiMap.getHeight() + " blocks");
-            lore.add("");
-            lore.add(org.bukkit.ChatColor.YELLOW + "Look at a wall to see preview");
-            lore.add(org.bukkit.ChatColor.YELLOW + "Right-click to place");
-            meta.setLore(lore);
-            hideVanillaMapTooltip(meta);
+            applyMultiBlockLore(meta, multiMap.getWidth(), multiMap.getHeight(), 0, true);
             
             item.setItemMeta(meta);
         }
@@ -578,7 +578,7 @@ public class MapManager implements FineMapsAPI {
         if (meta == null) return 1;
         
         PersistentDataContainer pdc = meta.getPersistentDataContainer();
-        Integer width = pdc.get(new NamespacedKey(plugin, "finemaps_width"), PersistentDataType.INTEGER);
+        Integer width = pdc.get(widthKey, PersistentDataType.INTEGER);
         return width != null ? width : 1;
     }
     
@@ -594,8 +594,116 @@ public class MapManager implements FineMapsAPI {
         if (meta == null) return 1;
         
         PersistentDataContainer pdc = meta.getPersistentDataContainer();
-        Integer height = pdc.get(new NamespacedKey(plugin, "finemaps_height"), PersistentDataType.INTEGER);
+        Integer height = pdc.get(heightKey, PersistentDataType.INTEGER);
         return height != null ? height : 1;
+    }
+
+    /**
+     * Gets the rotation (in degrees) of a multi-block map item.
+     * Normalized to one of: 0, 90, 180, 270.
+     */
+    public int getMultiBlockRotationDegrees(ItemStack item) {
+        if (item == null) return 0;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return 0;
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Integer rot = pdc.get(rotationKey, PersistentDataType.INTEGER);
+        return normalizeRotationDegrees(rot != null ? rot : 0);
+    }
+
+    /**
+     * Rotates a multi-block map item in-place by +90 degrees (clockwise),
+     * swapping its stored width/height and updating lore.
+     *
+     * @return true if rotation was applied
+     */
+    public boolean rotateMultiBlockItem(ItemStack item) {
+        if (item == null) return false;
+        if (getGroupIdFromItem(item) <= 0) return false;
+
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return false;
+
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Integer w = pdc.get(widthKey, PersistentDataType.INTEGER);
+        Integer h = pdc.get(heightKey, PersistentDataType.INTEGER);
+        if (w == null || h == null || w <= 0 || h <= 0) {
+            return false;
+        }
+
+        int current = getMultiBlockRotationDegrees(item);
+        int next = normalizeRotationDegrees(current + 90);
+        // swap effective dimensions every 90° turn
+        pdc.set(widthKey, PersistentDataType.INTEGER, h);
+        pdc.set(heightKey, PersistentDataType.INTEGER, w);
+        pdc.set(rotationKey, PersistentDataType.INTEGER, next);
+
+        applyMultiBlockLore(meta, h, w, next, true);
+        item.setItemMeta(meta);
+        return true;
+    }
+
+    /**
+     * Ensures a multi-block map item has up-to-date lore (size + rotation + usage hints).
+     * Useful for upgrading older items that predate rotation support.
+     */
+    public boolean ensureMultiBlockItemLore(ItemStack item) {
+        if (item == null) return false;
+        if (getGroupIdFromItem(item) <= 0) return false;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return false;
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Integer w = pdc.get(widthKey, PersistentDataType.INTEGER);
+        Integer h = pdc.get(heightKey, PersistentDataType.INTEGER);
+        if (w == null || h == null || w <= 0 || h <= 0) return false;
+
+        int rot = getMultiBlockRotationDegrees(item);
+        List<String> lore = meta.getLore();
+        boolean hasRotationLine = false;
+        if (lore != null) {
+            for (String line : lore) {
+                if (line != null && line.contains("Rotation:")) {
+                    hasRotationLine = true;
+                    break;
+                }
+            }
+        }
+        if (hasRotationLine) return false;
+
+        // Add default rotation key for older items (0°).
+        pdc.set(rotationKey, PersistentDataType.INTEGER, rot);
+        applyMultiBlockLore(meta, w, h, rot, true);
+        item.setItemMeta(meta);
+        return true;
+    }
+
+    /**
+     * Applies the standard multi-block lore, including rotation.
+     */
+    void applyMultiBlockLore(ItemMeta meta, int width, int height, int rotationDegrees, boolean includeUsageHints) {
+        if (meta == null) return;
+        int rot = normalizeRotationDegrees(rotationDegrees);
+
+        List<String> lore = new ArrayList<>();
+        lore.add(org.bukkit.ChatColor.GRAY + "Size: " + width + "x" + height + " blocks");
+        lore.add(org.bukkit.ChatColor.GRAY + "Rotation: " + rot + "\u00B0");
+        if (includeUsageHints) {
+            lore.add("");
+            lore.add(org.bukkit.ChatColor.YELLOW + "Look at a wall to see preview");
+            lore.add(org.bukkit.ChatColor.YELLOW + "Right-click to place");
+            lore.add(org.bukkit.ChatColor.YELLOW + "Sneak + Right-click to rotate");
+        }
+        meta.setLore(lore);
+        hideVanillaMapTooltip(meta);
+    }
+
+    private int normalizeRotationDegrees(int deg) {
+        int d = deg % 360;
+        if (d < 0) d += 360;
+        // snap to 90-degree increments
+        d = ((d + 45) / 90) * 90;
+        d = d % 360;
+        return d;
     }
 
     @Override
