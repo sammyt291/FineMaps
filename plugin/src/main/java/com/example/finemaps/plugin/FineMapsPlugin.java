@@ -34,6 +34,11 @@ import java.util.logging.Level;
 public class FineMapsPlugin extends JavaPlugin {
 
     private static FineMapsPlugin instance;
+
+    /**
+     * FineMaps requires Bukkit/Spigot 1.14+ (PersistentDataContainer, etc.).
+     */
+    private static final int MIN_SUPPORTED_MAJOR = 14;
     
     private FineMapsConfig config;
     private DatabaseProvider database;
@@ -50,6 +55,12 @@ public class FineMapsPlugin extends JavaPlugin {
         // Check dependencies
         if (!checkDependencies()) {
             getLogger().severe("Missing required dependencies! Disabling plugin.");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+
+        // Fail fast on unsupported (too old) server versions to avoid NoClassDefFoundError crashes.
+        if (!checkSupportedServerVersion()) {
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
@@ -93,6 +104,23 @@ public class FineMapsPlugin extends JavaPlugin {
         getLogger().info("FineMaps enabled successfully!");
         getLogger().info("Database type: " + (config.getDatabase().isMySQL() ? "MySQL" : "SQLite"));
         getLogger().info("Max virtual IDs: " + config.getMaps().getMaxVirtualIds());
+    }
+
+    private boolean checkSupportedServerVersion() {
+        String version = Bukkit.getBukkitVersion();
+        int major = NMSAdapterFactory.getMajorVersion();
+        int minor = NMSAdapterFactory.getMinorVersion();
+
+        // If parsing fails, let the plugin try to run; adapter creation will still guard.
+        if (major <= 0) return true;
+
+        if (major < MIN_SUPPORTED_MAJOR) {
+            getLogger().severe("FineMaps requires Minecraft 1." + MIN_SUPPORTED_MAJOR + "+.");
+            getLogger().severe("Detected server version: " + version + " (1." + major + "." + minor + ").");
+            getLogger().severe("Please update your server or use an older FineMaps version built for legacy servers.");
+            return false;
+        }
+        return true;
     }
 
     @Override
