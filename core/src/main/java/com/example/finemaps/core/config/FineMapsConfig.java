@@ -280,6 +280,11 @@ public class FineMapsConfig {
         @ConfigName("max-video-frames")
         private int maxVideoFrames = 300;
 
+        @Comment("How many worker threads to use when rasterising animated imports (GIF/APNG/WEBP/MP4/WEBM).\n" +
+            "1 = single-threaded. 0 = auto (uses available processors).")
+        @ConfigName("processor-threads")
+        private int processorThreads = 0;
+
         public boolean isDefaultDither() {
             return defaultDither;
         }
@@ -322,6 +327,10 @@ public class FineMapsConfig {
 
         public int getMaxVideoFrames() {
             return maxVideoFrames;
+        }
+
+        public int getProcessorThreads() {
+            return processorThreads;
         }
     }
 
