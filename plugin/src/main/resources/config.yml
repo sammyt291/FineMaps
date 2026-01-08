@@ -91,6 +91,10 @@ images:
   # Maximum number of frames to extract from a video import (MP4/WEBM)
   max-video-frames: 300
 
+  # How many worker threads to use when rasterising animated imports (GIF/APNG/WEBP/MP4/WEBM).
+  # 1 = single-threaded. 0 = auto (uses available processors).
+  processor-threads: 0
+
 economy:
   # Enable Vault economy integration (requires Vault + an economy plugin)
   enabled: false

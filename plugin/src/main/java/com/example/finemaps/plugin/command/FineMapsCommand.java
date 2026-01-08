@@ -15,6 +15,8 @@ import com.example.finemaps.plugin.url.GenericImageDecoder;
 import com.example.finemaps.plugin.url.UrlCache;
 import com.example.finemaps.plugin.url.UrlDownloader;
 import com.example.finemaps.plugin.url.VideoDecoder;
+import net.md_5.bungee.api.ChatMessageType;
+import net.md_5.bungee.api.chat.TextComponent;
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -47,7 +49,11 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import java.util.concurrent.TimeUnit;
 
@@ -1139,7 +1145,14 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                         config.getPermissions().getMaxImportSize()
                     );
 
-                    UrlCacheWriteResult cacheWrite = writeFramesAndColorsToCache(urlStr, downloaded, decoded, finalWidth, finalHeight, finalRaster, effectiveFps, processor);
+                    int processorThreads = 0;
+                    try {
+                        processorThreads = config.getImages().getProcessorThreads();
+                    } catch (Throwable ignored) {
+                    }
+                    UrlCacheWriteResult cacheWrite = writeFramesAndColorsToCache(
+                        urlStr, downloaded, decoded, finalWidth, finalHeight, finalRaster, effectiveFps, processor, player, processorThreads
+                    );
 
                     BufferedImage firstFrame = decoded.frames.get(0);
 
@@ -1869,7 +1882,9 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                                                             int height,
                                                             boolean raster,
                                                             int fps,
-                                                            ImageProcessor processor) throws IOException {
+                                                            ImageProcessor processor,
+                                                            Player progressPlayer,
+                                                            int processorThreads) throws IOException {
         // Always write processed color frames to a stable, per-URL cache directory so animations
         // survive plugin reload/restart (even if "url cache" is disabled for original downloads).
         Path baseDir = UrlCache.cacheDirForUrl(plugin.getDataFolder(), config.getImages().getUrlCacheFolder(), urlStr);
@@ -1898,43 +1913,170 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         List<byte[]> singleFrames = width == 1 && height == 1 ? new ArrayList<>() : null;
         List<byte[][]> multiFrames = width == 1 && height == 1 ? null : new ArrayList<>();
 
-        for (int i = 0; i < decoded.frames.size(); i++) {
-            BufferedImage frame = decoded.frames.get(i);
-            if (frame == null) continue;
+        final int totalFrames = (decoded.frames != null ? decoded.frames.size() : 0);
+        final int tileSize = com.example.finemaps.api.map.MapData.TOTAL_PIXELS;
+        final boolean writePngFrames = config.getImages().isUrlCacheEnabled();
 
-            // Save original-res frame as PNG
-            if (config.getImages().isUrlCacheEnabled()) {
-                File outFrame = framesDir.resolve(String.format(Locale.ROOT, "frame_%04d.png", i)).toFile();
-                try {
-                    ImageIO.write(frame, "png", outFrame);
-                } catch (Exception ignored) {
+        final AtomicInteger completed = new AtomicInteger(0);
+        final AtomicLong lastUpdateMs = new AtomicLong(0L);
+        final AtomicInteger lastPercent = new AtomicInteger(-1);
+        final Object progressLock = new Object();
+
+        // Keep results in-frame-order even when processed in parallel.
+        final byte[][] singleByIndex = (width == 1 && height == 1) ? new byte[totalFrames][] : null;
+        final byte[][][] multiByIndex = (width == 1 && height == 1) ? null : new byte[totalFrames][][];
+
+        int threads = resolveProcessorThreads(processorThreads, totalFrames);
+        ExecutorService exec = null;
+        try {
+            if (threads > 1) {
+                exec = Executors.newFixedThreadPool(threads);
+            }
+
+            List<Future<?>> futures = exec != null ? new ArrayList<>(totalFrames) : null;
+
+            for (int i = 0; i < totalFrames; i++) {
+                final int idx = i;
+                final BufferedImage frame = decoded.frames.get(i);
+
+                Runnable work = () -> {
+                    try {
+                        if (frame == null) return;
+
+                        // Save original-res frame as PNG (optional)
+                        if (writePngFrames) {
+                            File outFrame = framesDir.resolve(String.format(Locale.ROOT, "frame_%04d.png", idx)).toFile();
+                            try {
+                                ImageIO.write(frame, "png", outFrame);
+                            } catch (Exception ignored) {
+                            }
+                        }
+
+                        if (width == 1 && height == 1) {
+                            byte[] pixels = processor.processSingleMap(frame, raster);
+                            singleByIndex[idx] = pixels;
+                            Files.write(colorsDir.resolve(String.format(Locale.ROOT, "frame_%04d.bin", idx)), pixels);
+                        } else {
+                            byte[][] tiles = processor.processImage(frame, width, height, raster);
+                            multiByIndex[idx] = tiles;
+
+                            // Write concatenated tiles
+                            Path out = colorsDir.resolve(String.format(Locale.ROOT, "frame_%04d.bin", idx));
+                            byte[] all = new byte[tiles.length * tileSize];
+                            int off = 0;
+                            for (byte[] t : tiles) {
+                                System.arraycopy(t, 0, all, off, tileSize);
+                                off += tileSize;
+                            }
+                            Files.write(out, all);
+                        }
+                    } catch (IOException ioe) {
+                        throw new RuntimeException(ioe);
+                    } finally {
+                        int done = completed.incrementAndGet();
+                        maybeSendRasterProgress(progressPlayer, done, totalFrames, lastUpdateMs, lastPercent, progressLock);
+                    }
+                };
+
+                if (exec != null) {
+                    futures.add(exec.submit(work));
+                } else {
+                    work.run();
                 }
             }
 
-            if (width == 1 && height == 1) {
-                byte[] pixels = processor.processSingleMap(frame, raster);
-                singleFrames.add(pixels);
-                // Always write processed colors for persistence / restart recovery.
-                Files.write(colorsDir.resolve(String.format(Locale.ROOT, "frame_%04d.bin", i)), pixels);
-            } else {
-                byte[][] tiles = processor.processImage(frame, width, height, raster);
-                multiFrames.add(tiles);
-                // Always write processed colors for persistence / restart recovery.
-                // Write concatenated tiles
-                Path out = colorsDir.resolve(String.format(Locale.ROOT, "frame_%04d.bin", i));
-                int tileSize = com.example.finemaps.api.map.MapData.TOTAL_PIXELS;
-                byte[] all = new byte[tiles.length * tileSize];
-                int off = 0;
-                for (byte[] t : tiles) {
-                    System.arraycopy(t, 0, all, off, tileSize);
-                    off += tileSize;
+            if (futures != null) {
+                for (Future<?> f : futures) {
+                    try {
+                        f.get();
+                    } catch (Exception e) {
+                        Throwable cause = e.getCause() != null ? e.getCause() : e;
+                        if (cause instanceof RuntimeException && cause.getCause() instanceof IOException) {
+                            throw (IOException) cause.getCause();
+                        }
+                        throw new IOException("Failed while processing frames", cause);
+                    }
                 }
-                Files.write(out, all);
+            }
+        } finally {
+            if (exec != null) {
+                exec.shutdownNow();
+            }
+        }
+
+        // Final 100% update.
+        maybeSendRasterProgress(progressPlayer, totalFrames, totalFrames, lastUpdateMs, lastPercent, progressLock);
+
+        if (singleFrames != null) {
+            for (int i = 0; i < totalFrames; i++) {
+                if (singleByIndex[i] != null) singleFrames.add(singleByIndex[i]);
+            }
+        } else if (multiFrames != null) {
+            for (int i = 0; i < totalFrames; i++) {
+                if (multiByIndex[i] != null) multiFrames.add(multiByIndex[i]);
             }
         }
 
         return new UrlCacheWriteResult(singleFrames != null ? singleFrames : new ArrayList<>(),
             multiFrames != null ? multiFrames : new ArrayList<>());
+    }
+
+    private int resolveProcessorThreads(int configured, int totalFrames) {
+        int t = configured;
+        if (t <= 0) {
+            // Keep at least 1 thread, and avoid starving the server.
+            int cpu = Runtime.getRuntime().availableProcessors();
+            t = Math.max(1, cpu);
+        }
+        if (totalFrames > 0) t = Math.min(t, totalFrames);
+        return Math.max(1, t);
+    }
+
+    private void maybeSendRasterProgress(Player player,
+                                         int done,
+                                         int total,
+                                         AtomicLong lastUpdateMs,
+                                         AtomicInteger lastPercent,
+                                         Object lock) {
+        if (player == null || total <= 0) return;
+        int pct = Math.min(100, Math.max(0, (done * 100) / total));
+        long now = System.currentTimeMillis();
+
+        synchronized (lock) {
+            int prevPct = lastPercent.get();
+            long prevMs = lastUpdateMs.get();
+            boolean timeOk = (now - prevMs) >= 200L;
+            boolean force = (pct == 0 || pct == 100);
+            if (!force && (!timeOk || pct == prevPct)) return;
+            lastPercent.set(pct);
+            lastUpdateMs.set(now);
+        }
+
+        String bar = progressBar(pct, 20);
+        String msg = ChatColor.YELLOW + "Rasterising " + ChatColor.WHITE + pct + "%" + ChatColor.DARK_GRAY +
+            " [" + bar + ChatColor.DARK_GRAY + "] " + ChatColor.GRAY + done + "/" + total;
+
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            if (!player.isOnline()) return;
+            sendActionBar(player, msg);
+        });
+    }
+
+    private String progressBar(int percent, int width) {
+        int w = Math.max(5, width);
+        int filled = (int) Math.round((percent / 100.0) * w);
+        filled = Math.max(0, Math.min(w, filled));
+        String on = "█".repeat(filled);
+        String off = "░".repeat(w - filled);
+        return ChatColor.GREEN + on + ChatColor.DARK_GRAY + off;
+    }
+
+    private void sendActionBar(Player player, String message) {
+        if (player == null || message == null) return;
+        try {
+            player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(message));
+        } catch (Throwable ignored) {
+        }
     }
 
     private List<Long> tileOrderMapIds(com.example.finemaps.api.map.MultiBlockMap multiMap, int width, int height) {
