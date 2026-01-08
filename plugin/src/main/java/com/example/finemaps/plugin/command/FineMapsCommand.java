@@ -14,6 +14,7 @@ import com.example.finemaps.plugin.url.AnimatedImage;
 import com.example.finemaps.plugin.url.GenericImageDecoder;
 import com.example.finemaps.plugin.url.UrlCache;
 import com.example.finemaps.plugin.url.UrlDownloader;
+import com.example.finemaps.plugin.url.VideoDecoder;
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -126,7 +127,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
     private void sendHelp(CommandSender sender) {
         sender.sendMessage(ChatColor.GOLD + "=== FineMaps Commands ===");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps url <url> <name> [w] [h] [raster] [fps]" +
-                          ChatColor.GRAY + " - Create map from URL (supports GIF/APNG/WEBP)");
+                          ChatColor.GRAY + " - Create map from URL (supports GIF/APNG/WEBP/MP4/WEBM)");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps convert [mapId] [name]" +
                           ChatColor.GRAY + " - Convert/import a vanilla filled map (held or by id)");
         sender.sendMessage(ChatColor.YELLOW + "/finemaps import [mapId] [name]" +
@@ -1097,8 +1098,23 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                     // Download (with max-bytes sanity check) and cache original file on disk
                     Path downloaded = downloadAndCacheUrlImage(urlStr);
 
-                    // Decode static or animated frames
-                    AnimatedImage decoded = GenericImageDecoder.decode(downloaded, urlStr);
+                    int effectiveFps = (finalFps != null ? finalFps : config.getImages().getDefaultAnimatedFps());
+                    if (effectiveFps <= 0) effectiveFps = config.getImages().getDefaultAnimatedFps();
+
+                    // Decode static or animated frames (images + optional video via ffmpeg)
+                    String downloadedName = downloaded.getFileName().toString().toLowerCase(Locale.ROOT);
+                    AnimatedImage decoded;
+                    if (downloadedName.endsWith(".mp4") || downloadedName.endsWith(".webm")) {
+                        decoded = VideoDecoder.decode(
+                            downloaded,
+                            urlStr,
+                            effectiveFps,
+                            config.getImages().getMaxVideoFrames(),
+                            config.getImages().getFfmpegPath()
+                        );
+                    } else {
+                        decoded = GenericImageDecoder.decode(downloaded, urlStr);
+                    }
                     if (decoded.frames == null || decoded.frames.isEmpty()) {
                         throw new IOException("Could not decode image");
                     }
@@ -1109,9 +1125,6 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                     if (sizeCheck.getWidth() > maxSize || sizeCheck.getHeight() > maxSize) {
                         throw new IOException("Image too large. Max size: " + maxSize + "x" + maxSize);
                     }
-
-                    int effectiveFps = (finalFps != null ? finalFps : config.getImages().getDefaultAnimatedFps());
-                    if (effectiveFps <= 0) effectiveFps = config.getImages().getDefaultAnimatedFps();
 
                     // Precompute map color frames and write them to cache folder
                     ImageProcessor processor = new ImageProcessor(
@@ -1754,6 +1767,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         if (path.endsWith(".png") || path.endsWith(".apng")) return "png";
         if (path.endsWith(".gif")) return "gif";
         if (path.endsWith(".webp")) return "webp";
+        if (path.endsWith(".mp4")) return "mp4";
+        if (path.endsWith(".webm")) return "webm";
         if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "jpg";
 
         if (contentType != null) {
@@ -1761,6 +1776,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             if (contentType.equals("image/gif")) return "gif";
             if (contentType.equals("image/webp")) return "webp";
             if (contentType.equals("image/jpeg")) return "jpg";
+            if (contentType.equals("video/mp4")) return "mp4";
+            if (contentType.equals("video/webm")) return "webm";
         }
         return "bin";
     }
