@@ -60,6 +60,81 @@ public class MapViewManager {
     }
 
     /**
+     * Binds an existing Bukkit map ID (from an item/map_#.dat) to a database map ID.
+     * <p>
+     * This is important after server restarts: the ItemStack in an item frame still references the
+     * original Bukkit map id, but our in-memory renderer mappings are lost. Binding re-attaches our
+     * renderer to the existing MapView so the client can render again without re-placing the item.
+     *
+     * @param dbMapId The database map ID
+     * @param bukkitMapId The existing Bukkit map ID found in an item
+     * @param pixelSupplier Supplier for pixel data (called lazily by the renderer)
+     * @return The bound Bukkit map ID, or -1 on failure
+     */
+    @SuppressWarnings("deprecation")
+    public int bindExistingBukkitMapId(long dbMapId, int bukkitMapId, Supplier<byte[]> pixelSupplier) {
+        if (dbMapId <= 0 || bukkitMapId < 0) {
+            return -1;
+        }
+
+        // If we already have this exact mapping, nothing to do.
+        Integer existing = dbToBukkitId.get(dbMapId);
+        if (existing != null && existing == bukkitMapId) {
+            return bukkitMapId;
+        }
+
+        try {
+            MapView mapView = Bukkit.getMap(bukkitMapId);
+            if (mapView == null) {
+                // If the map id doesn't exist in the server registry, fall back to creating a new one.
+                return createBukkitMap(dbMapId, pixelSupplier);
+            }
+
+            // Remove any existing renderers (vanilla or stale) and attach ours.
+            for (MapRenderer r : mapView.getRenderers()) {
+                mapView.removeRenderer(r);
+            }
+            FineMapsRenderer customRenderer = new FineMapsRenderer(dbMapId, pixelSupplier);
+            mapView.addRenderer(customRenderer);
+
+            // Configure the map view (best-effort).
+            try {
+                mapView.setScale(MapView.Scale.NORMAL);
+                mapView.setTrackingPosition(false);
+                mapView.setUnlimitedTracking(false);
+            } catch (Throwable ignored) {
+            }
+            try {
+                mapView.setLocked(true);
+            } catch (Throwable ignored) {
+            }
+
+            // If dbMapId was mapped to a different bukkit id, clean it up.
+            if (existing != null && existing != bukkitMapId) {
+                bukkitToDbId.remove(existing);
+            }
+
+            // If this bukkit id was mapped to a different db id, clean it up.
+            Long prevDb = bukkitToDbId.get(bukkitMapId);
+            if (prevDb != null && prevDb != dbMapId) {
+                dbToBukkitId.remove(prevDb);
+                renderers.remove(prevDb);
+                mapViews.remove(prevDb);
+            }
+
+            dbToBukkitId.put(dbMapId, bukkitMapId);
+            bukkitToDbId.put(bukkitMapId, dbMapId);
+            renderers.put(dbMapId, customRenderer);
+            mapViews.put(dbMapId, mapView);
+
+            return bukkitMapId;
+        } catch (Exception e) {
+            logger.log(Level.SEVERE, "Failed to bind Bukkit map " + bukkitMapId + " to DB ID " + dbMapId, e);
+            return -1;
+        }
+    }
+
+    /**
      * Gets or creates a Bukkit map with pre-loaded pixel data.
      *
      * @param dbMapId The database map ID

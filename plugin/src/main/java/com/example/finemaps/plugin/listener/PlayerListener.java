@@ -47,6 +47,11 @@ public class PlayerListener implements Listener {
             // Check inventory for stored maps and send their data
             for (ItemStack item : player.getInventory().getContents()) {
                 if (item != null && mapManager.isStoredMap(item)) {
+                    // Re-bind MapView renderers after restart so maps in frames/hands are not blank.
+                    try {
+                        mapManager.bindMapViewToItem(item);
+                    } catch (Throwable ignored) {
+                    }
                     long mapId = mapManager.getMapIdFromItem(item);
                     if (mapId != -1) {
                         mapManager.sendMapToPlayer(player, mapId);
