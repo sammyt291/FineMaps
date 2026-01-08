@@ -7,6 +7,8 @@ import org.bukkit.map.MapView;
 import org.bukkit.map.MapRenderer;
 import org.bukkit.plugin.Plugin;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -355,7 +357,45 @@ public class MapViewManager {
     /**
      * Clears all managed maps.
      */
+    @SuppressWarnings("deprecation")
     public void clear() {
+        // Detach our renderer instances from Bukkit MapViews so Bukkit doesn't keep calling back
+        // into stale suppliers after disable/reload (which can happen with item frames / held maps).
+        try {
+            // 1) Prefer the MapView instances we already have.
+            for (MapView view : new ArrayList<>(mapViews.values())) {
+                if (view == null) continue;
+                try {
+                    for (MapRenderer r : new ArrayList<>(view.getRenderers())) {
+                        if (r instanceof FineMapsRenderer) {
+                            view.removeRenderer(r);
+                        }
+                    }
+                } catch (Throwable ignored) {
+                    // Best-effort: don't fail shutdown
+                }
+            }
+
+            // 2) Also look up by Bukkit map id in case mapViews missed some entries.
+            List<Integer> ids = new ArrayList<>(dbToBukkitId.values());
+            for (Integer id : ids) {
+                if (id == null) continue;
+                try {
+                    MapView view = Bukkit.getMap(id);
+                    if (view == null) continue;
+                    for (MapRenderer r : new ArrayList<>(view.getRenderers())) {
+                        if (r instanceof FineMapsRenderer) {
+                            view.removeRenderer(r);
+                        }
+                    }
+                } catch (Throwable ignored) {
+                    // Best-effort
+                }
+            }
+        } catch (Throwable ignored) {
+            // Best-effort
+        }
+
         dbToBukkitId.clear();
         bukkitToDbId.clear();
         renderers.clear();

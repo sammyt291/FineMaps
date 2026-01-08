@@ -13,6 +13,7 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -25,6 +26,7 @@ public abstract class AbstractDatabaseProvider implements DatabaseProvider {
     protected final Logger logger;
     protected final ExecutorService executor;
     protected HikariDataSource dataSource;
+    private volatile boolean shuttingDown = false;
 
     // SQL statements - may be overridden by implementations
     protected static final String CREATE_MAPS_TABLE = 
@@ -152,6 +154,7 @@ public abstract class AbstractDatabaseProvider implements DatabaseProvider {
 
     @Override
     public void shutdown() {
+        shuttingDown = true;
         executor.shutdown();
         if (dataSource != null && !dataSource.isClosed()) {
             dataSource.close();
@@ -241,32 +244,47 @@ public abstract class AbstractDatabaseProvider implements DatabaseProvider {
 
     @Override
     public CompletableFuture<Optional<MapData>> getMapData(long mapId) {
-        return CompletableFuture.supplyAsync(() -> {
-            String sql = "SELECT * FROM finemaps_data WHERE map_id = ?";
-            try (Connection conn = dataSource.getConnection();
-                 PreparedStatement stmt = conn.prepareStatement(sql)) {
-                stmt.setLong(1, mapId);
-                try (ResultSet rs = stmt.executeQuery()) {
-                    if (rs.next()) {
-                        byte[] pixels = rs.getBytes("pixels");
-                        byte[] palette = rs.getBytes("palette");
-                        boolean compressed = rs.getBoolean("compressed");
+        // Rendering code can still call into this during plugin disable/reload (MapView renderers
+        // may outlive plugin state briefly). Avoid submitting to a terminated executor, and avoid
+        // touching the datasource after shutdown.
+        if (shuttingDown || dataSource == null || dataSource.isClosed()) {
+            return CompletableFuture.completedFuture(Optional.empty());
+        }
 
-                        if (compressed) {
-                            pixels = RLECompression.decompress(pixels, MapData.TOTAL_PIXELS);
-                            if (palette != null) {
-                                palette = RLECompression.decompress(palette, palette.length * 4);
-                            }
-                        }
-
-                        return Optional.of(new MapData(mapId, pixels, palette));
-                    }
+        try {
+            return CompletableFuture.supplyAsync(() -> {
+                if (shuttingDown || dataSource == null || dataSource.isClosed()) {
+                    return Optional.empty();
                 }
-            } catch (SQLException e) {
-                logger.log(Level.SEVERE, "Failed to get map data: " + mapId, e);
-            }
-            return Optional.empty();
-        }, executor);
+                String sql = "SELECT * FROM finemaps_data WHERE map_id = ?";
+                try (Connection conn = dataSource.getConnection();
+                     PreparedStatement stmt = conn.prepareStatement(sql)) {
+                    stmt.setLong(1, mapId);
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        if (rs.next()) {
+                            byte[] pixels = rs.getBytes("pixels");
+                            byte[] palette = rs.getBytes("palette");
+                            boolean compressed = rs.getBoolean("compressed");
+
+                            if (compressed) {
+                                pixels = RLECompression.decompress(pixels, MapData.TOTAL_PIXELS);
+                                if (palette != null) {
+                                    palette = RLECompression.decompress(palette, palette.length * 4);
+                                }
+                            }
+
+                            return Optional.of(new MapData(mapId, pixels, palette));
+                        }
+                    }
+                } catch (SQLException e) {
+                    logger.log(Level.SEVERE, "Failed to get map data: " + mapId, e);
+                }
+                return Optional.empty();
+            }, executor);
+        } catch (RejectedExecutionException e) {
+            // Executor already terminated (common during /reload). Treat as missing data.
+            return CompletableFuture.completedFuture(Optional.empty());
+        }
     }
 
     @Override
@@ -590,17 +608,27 @@ public abstract class AbstractDatabaseProvider implements DatabaseProvider {
 
     @Override
     public void updateLastAccessed(long mapId) {
-        executor.submit(() -> {
-            String sql = "UPDATE finemaps_maps SET last_accessed = ? WHERE id = ?";
-            try (Connection conn = dataSource.getConnection();
-                 PreparedStatement stmt = conn.prepareStatement(sql)) {
-                stmt.setLong(1, System.currentTimeMillis());
-                stmt.setLong(2, mapId);
-                stmt.executeUpdate();
-            } catch (SQLException e) {
-                logger.log(Level.WARNING, "Failed to update last accessed: " + mapId, e);
-            }
-        });
+        if (shuttingDown || dataSource == null || dataSource.isClosed()) {
+            return;
+        }
+        try {
+            executor.submit(() -> {
+                if (shuttingDown || dataSource == null || dataSource.isClosed()) {
+                    return;
+                }
+                String sql = "UPDATE finemaps_maps SET last_accessed = ? WHERE id = ?";
+                try (Connection conn = dataSource.getConnection();
+                     PreparedStatement stmt = conn.prepareStatement(sql)) {
+                    stmt.setLong(1, System.currentTimeMillis());
+                    stmt.setLong(2, mapId);
+                    stmt.executeUpdate();
+                } catch (SQLException e) {
+                    logger.log(Level.WARNING, "Failed to update last accessed: " + mapId, e);
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+            // Executor already terminated (common during /reload). Ignore.
+        }
     }
 
     @Override
