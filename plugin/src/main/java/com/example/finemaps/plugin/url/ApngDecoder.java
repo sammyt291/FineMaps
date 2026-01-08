@@ -38,6 +38,16 @@ public final class ApngDecoder {
     }
 
     public static List<BufferedImage> decode(Path file) throws IOException {
+        return decode(file, 0, 0);
+    }
+
+    /**
+     * Decode an APNG/PNG file into fully-composited frames.
+     *
+     * @param maxFrames If > 0, hard-cap the number of decoded frames.
+     * @param maxCanvasSize If > 0, rejects images where canvas width/height exceeds this value.
+     */
+    public static List<BufferedImage> decode(Path file, int maxFrames, int maxCanvasSize) throws IOException {
         byte[] all = Files.readAllBytes(file);
         if (all.length < 8 || !Arrays.equals(Arrays.copyOfRange(all, 0, 8), PNG_SIG)) {
             throw new IOException("Not a PNG/APNG file");
@@ -73,6 +83,9 @@ public final class ApngDecoder {
                 ihdr = new Chunk(type, data);
                 canvasW = readInt(data, 0);
                 canvasH = readInt(data, 4);
+                if (maxCanvasSize > 0 && (canvasW > maxCanvasSize || canvasH > maxCanvasSize)) {
+                    throw new IOException("Image too large. Max size: " + maxCanvasSize + "x" + maxCanvasSize);
+                }
                 continue;
             }
 
@@ -82,6 +95,10 @@ public final class ApngDecoder {
             }
 
             if ("fcTL".equals(type)) {
+                if (maxFrames > 0 && frames.size() >= maxFrames) {
+                    // Stop parsing once we've collected enough frames; avoids excessive allocations.
+                    break;
+                }
                 // Start a new frame control
                 Frame f = Frame.fromFcTL(data);
                 frames.add(f);
@@ -137,6 +154,9 @@ public final class ApngDecoder {
             // Not animated (or single frame) -> fall back to normal ImageIO
             BufferedImage img = ImageIO.read(file.toFile());
             if (img == null) throw new IOException("Failed to decode PNG");
+            if (maxCanvasSize > 0 && (img.getWidth() > maxCanvasSize || img.getHeight() > maxCanvasSize)) {
+                throw new IOException("Image too large. Max size: " + maxCanvasSize + "x" + maxCanvasSize);
+            }
             List<BufferedImage> one = new ArrayList<>();
             one.add(img);
             return one;
@@ -156,6 +176,7 @@ public final class ApngDecoder {
         List<BufferedImage> outFrames = new ArrayList<>();
 
         for (Frame f : frames) {
+            if (maxFrames > 0 && outFrames.size() >= maxFrames) break;
             if (f.idatData.isEmpty()) {
                 // Some APNGs may have empty frames; skip
                 continue;

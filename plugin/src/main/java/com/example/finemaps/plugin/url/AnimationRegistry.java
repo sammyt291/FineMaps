@@ -35,6 +35,7 @@ public final class AnimationRegistry {
     private final MapManager mapManager;
     private final NMSAdapter nmsAdapter;
     private final String cacheFolderName;
+    private final int frameCacheFrames;
 
     private final File persistFile;
     private final AtomicBoolean loadedPersisted = new AtomicBoolean(false);
@@ -50,11 +51,12 @@ public final class AnimationRegistry {
     private volatile Map<Long, Map<UUID, Set<Integer>>> viewersByDbMapId = new HashMap<>();
     private int viewerScanTaskId = -1;
 
-    public AnimationRegistry(Plugin plugin, MapManager mapManager, String cacheFolderName) {
+    public AnimationRegistry(Plugin plugin, MapManager mapManager, String cacheFolderName, int frameCacheFrames) {
         this.plugin = plugin;
         this.mapManager = mapManager;
         this.nmsAdapter = mapManager.getNmsAdapter();
         this.cacheFolderName = (cacheFolderName != null && !cacheFolderName.isBlank()) ? cacheFolderName : "url-cache";
+        this.frameCacheFrames = Math.max(0, frameCacheFrames);
         this.persistFile = new File(plugin.getDataFolder(), "animations.yml");
     }
 
@@ -82,6 +84,32 @@ public final class AnimationRegistry {
         animationsByName.put(name, a);
         ensureViewerScan();
         a.start();
+    }
+
+    /**
+     * Starts playback using frames stored on disk (the URL import workflow writes these).
+     * This avoids loading all frame data into memory at once.
+     */
+    public boolean registerAndStartSingleFromCache(String name, long mapId, int fps, String url, int width, int height, boolean raster) {
+        try {
+            List<byte[]> frames = loadSingleFramesFromCache(url, width, height, raster, fps);
+            if (frames == null || frames.isEmpty()) return false;
+            registerAndStartSingle(name, mapId, fps, frames);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public boolean registerAndStartMultiFromCache(String name, List<Long> mapIdsInTileOrder, int width, int height, int fps, String url, boolean raster) {
+        try {
+            List<byte[][]> frames = loadMultiFramesFromCache(url, width, height, raster, fps);
+            if (frames == null || frames.isEmpty()) return false;
+            registerAndStartMulti(name, mapIdsInTileOrder, width, height, fps, frames);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     /**
@@ -471,6 +499,7 @@ public final class AnimationRegistry {
             if (!isMulti) {
                 if (singleFrames == null || singleFrames.isEmpty()) return;
                 byte[] frame = singleFrames.get(idx % singleFrames.size());
+                if (frame == null || frame.length != com.example.finemaps.api.map.MapData.TOTAL_PIXELS) return;
                 // Always update in-memory pixels (keeps compatibility with the MapRenderer path).
                 mapManager.updateMapPixelsRuntime(singleMapId, frame);
                 // If ProtocolLib is present, push packets to viewers (smooth in-world playback).
@@ -488,6 +517,7 @@ public final class AnimationRegistry {
             for (int i = 0; i < expectedTiles; i++) {
                 long mapId = multiMapIds.get(i);
                 byte[] pixels = tiles[i];
+                if (pixels == null || pixels.length != com.example.finemaps.api.map.MapData.TOTAL_PIXELS) continue;
                 mapManager.updateMapPixelsRuntime(mapId, pixels);
                 pushToViewers(mapId, pixels);
             }
@@ -707,51 +737,156 @@ public final class AnimationRegistry {
         if (width != 1 || height != 1) return java.util.Collections.emptyList();
         Path dir = cacheVariantColorsDir(url, width, height, raster, fps);
         if (dir == null || !Files.isDirectory(dir)) return java.util.Collections.emptyList();
-        java.util.List<Path> files = new java.util.ArrayList<>();
-        try (DirectoryStream<Path> ds = Files.newDirectoryStream(dir, "frame_*.bin")) {
-            for (Path p : ds) {
-                if (p != null && Files.isRegularFile(p)) files.add(p);
-            }
-        }
-        files.sort(java.util.Comparator.comparing(p -> String.valueOf(p.getFileName())));
-
-        List<byte[]> out = new java.util.ArrayList<>(files.size());
-        for (Path p : files) {
-            byte[] bytes = Files.readAllBytes(p);
-            if (bytes.length != com.example.finemaps.api.map.MapData.TOTAL_PIXELS) continue;
-            out.add(bytes);
-        }
-        return out;
+        List<Path> files = listFrameFiles(dir);
+        if (files.isEmpty()) return java.util.Collections.emptyList();
+        return new DiskSingleFrameList(files, frameCacheFrames);
     }
 
     private List<byte[][]> loadMultiFramesFromCache(String url, int width, int height, boolean raster, int fps) throws IOException {
         if (width <= 0 || height <= 0) return java.util.Collections.emptyList();
         int tiles = width * height;
         int tileSize = com.example.finemaps.api.map.MapData.TOTAL_PIXELS;
-        int expected = tiles * tileSize;
         Path dir = cacheVariantColorsDir(url, width, height, raster, fps);
         if (dir == null || !Files.isDirectory(dir)) return java.util.Collections.emptyList();
+        List<Path> files = listFrameFiles(dir);
+        if (files.isEmpty()) return java.util.Collections.emptyList();
+        return new DiskMultiFrameList(files, tiles, tileSize, frameCacheFrames);
+    }
+
+    private List<Path> listFrameFiles(Path dir) throws IOException {
         java.util.List<Path> files = new java.util.ArrayList<>();
         try (DirectoryStream<Path> ds = Files.newDirectoryStream(dir, "frame_*.bin")) {
             for (Path p : ds) {
                 if (p != null && Files.isRegularFile(p)) files.add(p);
             }
         }
-        files.sort(java.util.Comparator.comparing(p -> String.valueOf(p.getFileName())));
-
-        List<byte[][]> out = new java.util.ArrayList<>(files.size());
-        for (Path p : files) {
-            byte[] bytes = Files.readAllBytes(p);
-            if (bytes.length != expected) continue;
-            byte[][] tilesArr = new byte[tiles][tileSize];
-            int off = 0;
-            for (int i = 0; i < tiles; i++) {
-                System.arraycopy(bytes, off, tilesArr[i], 0, tileSize);
-                off += tileSize;
+        files.sort((a, b) -> {
+            int ia = parseFrameIndex(a != null ? a.getFileName().toString() : null);
+            int ib = parseFrameIndex(b != null ? b.getFileName().toString() : null);
+            if (ia != Integer.MIN_VALUE && ib != Integer.MIN_VALUE) {
+                return Integer.compare(ia, ib);
             }
-            out.add(tilesArr);
+            return String.valueOf(a != null ? a.getFileName() : "").compareTo(String.valueOf(b != null ? b.getFileName() : ""));
+        });
+        return files;
+    }
+
+    private int parseFrameIndex(String filename) {
+        if (filename == null) return Integer.MIN_VALUE;
+        // frame_0000.bin / frame_10000.bin
+        int us = filename.indexOf('_');
+        int dot = filename.lastIndexOf('.');
+        if (us < 0) return Integer.MIN_VALUE;
+        if (dot < 0) dot = filename.length();
+        if (dot <= us + 1) return Integer.MIN_VALUE;
+        String mid = filename.substring(us + 1, dot);
+        try {
+            return Integer.parseInt(mid);
+        } catch (NumberFormatException e) {
+            return Integer.MIN_VALUE;
         }
-        return out;
+    }
+
+    private static final class DiskSingleFrameList extends java.util.AbstractList<byte[]> implements java.util.RandomAccess {
+        private final List<Path> files;
+        private final int cacheCap;
+        private final java.util.LinkedHashMap<Integer, byte[]> cache;
+
+        private DiskSingleFrameList(List<Path> files, int cacheCap) {
+            this.files = files != null ? files : java.util.Collections.emptyList();
+            this.cacheCap = Math.max(0, cacheCap);
+            this.cache = new java.util.LinkedHashMap<Integer, byte[]>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<Integer, byte[]> eldest) {
+                    return DiskSingleFrameList.this.cacheCap > 0 && size() > DiskSingleFrameList.this.cacheCap;
+                }
+            };
+        }
+
+        @Override
+        public int size() {
+            return files.size();
+        }
+
+        @Override
+        public byte[] get(int index) {
+            if (index < 0 || index >= files.size()) throw new IndexOutOfBoundsException();
+            synchronized (cache) {
+                byte[] cached = cache.get(index);
+                if (cached != null) return cached;
+            }
+            try {
+                byte[] bytes = Files.readAllBytes(files.get(index));
+                if (bytes.length != com.example.finemaps.api.map.MapData.TOTAL_PIXELS) {
+                    return null;
+                }
+                if (cacheCap > 0) {
+                    synchronized (cache) {
+                        cache.put(index, bytes);
+                    }
+                }
+                return bytes;
+            } catch (IOException e) {
+                return null;
+            }
+        }
+    }
+
+    private static final class DiskMultiFrameList extends java.util.AbstractList<byte[][]> implements java.util.RandomAccess {
+        private final List<Path> files;
+        private final int tiles;
+        private final int tileSize;
+        private final int expected;
+        private final int cacheCap;
+        private final java.util.LinkedHashMap<Integer, byte[][]> cache;
+
+        private DiskMultiFrameList(List<Path> files, int tiles, int tileSize, int cacheCap) {
+            this.files = files != null ? files : java.util.Collections.emptyList();
+            this.tiles = Math.max(1, tiles);
+            this.tileSize = Math.max(1, tileSize);
+            this.expected = this.tiles * this.tileSize;
+            this.cacheCap = Math.max(0, cacheCap);
+            this.cache = new java.util.LinkedHashMap<Integer, byte[][]>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<Integer, byte[][]> eldest) {
+                    return DiskMultiFrameList.this.cacheCap > 0 && size() > DiskMultiFrameList.this.cacheCap;
+                }
+            };
+        }
+
+        @Override
+        public int size() {
+            return files.size();
+        }
+
+        @Override
+        public byte[][] get(int index) {
+            if (index < 0 || index >= files.size()) throw new IndexOutOfBoundsException();
+            synchronized (cache) {
+                byte[][] cached = cache.get(index);
+                if (cached != null) return cached;
+            }
+            try {
+                byte[] bytes = Files.readAllBytes(files.get(index));
+                if (bytes.length != expected) {
+                    return null;
+                }
+                byte[][] tilesArr = new byte[tiles][tileSize];
+                int off = 0;
+                for (int i = 0; i < tiles; i++) {
+                    System.arraycopy(bytes, off, tilesArr[i], 0, tileSize);
+                    off += tileSize;
+                }
+                if (cacheCap > 0) {
+                    synchronized (cache) {
+                        cache.put(index, tilesArr);
+                    }
+                }
+                return tilesArr;
+            } catch (IOException e) {
+                return null;
+            }
+        }
     }
 
     private Path cacheVariantColorsDir(String url, int width, int height, boolean raster, int fps) {

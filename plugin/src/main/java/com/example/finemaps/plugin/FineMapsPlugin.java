@@ -95,7 +95,14 @@ public class FineMapsPlugin extends JavaPlugin {
         mapManager = new MapManager(this, config, database, nmsAdapter);
         multiBlockHandler = new MultiBlockMapHandler(this, mapManager);
         String cacheFolder = (config != null && config.getImages() != null) ? config.getImages().getUrlCacheFolder() : "url-cache";
-        animationRegistry = new AnimationRegistry(this, mapManager, cacheFolder);
+        int animCacheFrames = 32;
+        try {
+            if (config != null && config.getImages() != null) {
+                animCacheFrames = config.getImages().getAnimationFrameCacheFrames();
+            }
+        } catch (Throwable ignored) {
+        }
+        animationRegistry = new AnimationRegistry(this, mapManager, cacheFolder, animCacheFrames);
 
         // Hook Vault (optional, only used if enabled in config)
         setupEconomy();

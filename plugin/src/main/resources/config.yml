@@ -91,6 +91,14 @@ images:
   # Maximum number of frames to extract from a video import (MP4/WEBM)
   max-video-frames: 300
 
+  # Maximum number of frames to decode/process from animated image imports (GIF/APNG/WEBP).
+  # This is a safety cap to prevent giant GIFs from exhausting memory/CPU.
+  max-animated-frames: 300
+
+  # How many frames to keep in memory during animation playback (LRU cache).
+  # Frame pixel data is stored on disk; this cache avoids constant disk reads.
+  animation-frame-cache-frames: 32
+
   # How many worker threads to use when rasterising animated imports (GIF/APNG/WEBP/MP4/WEBM).
   # 1 = single-threaded. 0 = auto (uses available processors).
   processor-threads: 0

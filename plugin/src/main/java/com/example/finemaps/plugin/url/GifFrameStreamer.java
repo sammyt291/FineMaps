@@ -4,103 +4,33 @@ import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
 import javax.imageio.metadata.IIOMetadata;
 import javax.imageio.stream.ImageInputStream;
-import java.awt.*;
+import java.awt.AlphaComposite;
+import java.awt.Color;
+import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.List;
 
 /**
- * Decodes static + animated images into fully-composited frames.
+ * Streams fully-composited GIF frames without holding all frames in memory.
  *
- * - GIF: uses ImageIO + metadata to composite frames
- * - APNG: uses a minimal built-in APNG decoder (no deps)
- * - WEBP: uses ImageIO reader (requires a WEBP ImageIO plugin on classpath; we shade TwelveMonkeys WEBP)
+ * This is designed for long animations: we composite onto a single canvas, snapshot each frame,
+ * and immediately pass it to a consumer.
  */
-public final class GenericImageDecoder {
+public final class GifFrameStreamer {
 
-    private GenericImageDecoder() {
+    private GifFrameStreamer() {
     }
 
-    public static AnimatedImage decode(Path file, String hintFromUrl) throws IOException {
-        return decode(file, hintFromUrl, 0, 0);
+    public interface FrameConsumer {
+        void onFrame(int index, BufferedImage compositedCanvasFrame) throws IOException;
     }
 
-    /**
-     * Decode a static or animated image into fully-composited frames.
-     *
-     * @param maxFrames If > 0, hard-cap the number of decoded frames for animated images.
-     * @param maxCanvasSize If > 0, rejects images where width/height exceeds this value.
-     */
-    public static AnimatedImage decode(Path file, String hintFromUrl, int maxFrames, int maxCanvasSize) throws IOException {
-        String hint = hintFromUrl != null ? hintFromUrl.toLowerCase() : "";
-        if (hint.endsWith(".apng") || (hint.endsWith(".png") && ApngDecoder.looksLikePng(file))) {
-            // Try APNG first (will fall back to normal PNG if not animated)
-            List<BufferedImage> frames = ApngDecoder.decode(file, maxFrames, maxCanvasSize);
-            String fmt = frames.size() > 1 ? "apng" : "png";
-            return new AnimatedImage(frames, fmt);
-        }
+    public static int stream(File file, int maxFrames, int maxCanvasSize, FrameConsumer consumer) throws IOException {
+        if (file == null) throw new IllegalArgumentException("file is null");
+        if (consumer == null) throw new IllegalArgumentException("consumer is null");
 
-        if (hint.endsWith(".gif")) {
-            return new AnimatedImage(decodeGif(file.toFile(), maxFrames, maxCanvasSize), "gif");
-        }
-
-        if (hint.endsWith(".webp")) {
-            // WebP reader provided by shaded plugin.
-            List<BufferedImage> frames = decodeWithImageIOSequence(file.toFile(), maxFrames, maxCanvasSize);
-            if (frames.isEmpty()) throw new IOException("Failed to decode WEBP");
-            return new AnimatedImage(frames, "webp");
-        }
-
-        // Generic ImageIO fallback (PNG/JPEG/etc) - if reader supports sequences, keep frames.
-        List<BufferedImage> frames = decodeWithImageIOSequence(file.toFile(), maxFrames, maxCanvasSize);
-        if (frames.isEmpty()) throw new IOException("Failed to decode image");
-        String fmt = frames.size() > 1 ? "animated" : "static";
-        return new AnimatedImage(frames, fmt);
-    }
-
-    private static List<BufferedImage> decodeWithImageIOSequence(File file, int maxFrames, int maxCanvasSize) throws IOException {
-        try (ImageInputStream iis = ImageIO.createImageInputStream(file)) {
-            if (iis == null) return new ArrayList<>();
-            Iterator<ImageReader> readers = ImageIO.getImageReaders(iis);
-            if (!readers.hasNext()) {
-                return new ArrayList<>();
-            }
-            ImageReader reader = readers.next();
-            try {
-                reader.setInput(iis, false, false);
-                int num;
-                try {
-                    num = reader.getNumImages(true);
-                } catch (Exception ignored) {
-                    num = 1;
-                }
-                int limit = Math.max(1, num);
-                if (maxFrames > 0) {
-                    limit = Math.min(limit, Math.max(1, maxFrames));
-                }
-
-                List<BufferedImage> frames = new ArrayList<>();
-                for (int i = 0; i < limit; i++) {
-                    BufferedImage img = reader.read(i);
-                    if (img != null) {
-                        if (maxCanvasSize > 0 && (img.getWidth() > maxCanvasSize || img.getHeight() > maxCanvasSize)) {
-                            throw new IOException("Image too large. Max size: " + maxCanvasSize + "x" + maxCanvasSize);
-                        }
-                        frames.add(toArgb(img));
-                    }
-                }
-                return frames;
-            } finally {
-                reader.dispose();
-            }
-        }
-    }
-
-    private static List<BufferedImage> decodeGif(File file, int maxFrames, int maxCanvasSize) throws IOException {
         try (ImageInputStream stream = ImageIO.createImageInputStream(file)) {
             if (stream == null) throw new IOException("Could not open GIF");
             Iterator<ImageReader> readers = ImageIO.getImageReadersByFormatName("gif");
@@ -109,21 +39,18 @@ public final class GenericImageDecoder {
             ImageReader reader = readers.next();
             try {
                 reader.setInput(stream, false, false);
-                int num = reader.getNumImages(true);
-                if (num <= 1) {
-                    BufferedImage img = reader.read(0);
-                    List<BufferedImage> one = new ArrayList<>();
-                    if (img != null) {
-                        if (maxCanvasSize > 0 && (img.getWidth() > maxCanvasSize || img.getHeight() > maxCanvasSize)) {
-                            throw new IOException("Image too large. Max size: " + maxCanvasSize + "x" + maxCanvasSize);
-                        }
-                        one.add(toArgb(img));
-                    }
-                    return one;
+
+                int num;
+                try {
+                    num = reader.getNumImages(true);
+                } catch (Throwable ignored) {
+                    num = Integer.MAX_VALUE; // unknown
                 }
 
                 int limit = num;
-                if (maxFrames > 0) limit = Math.min(limit, Math.max(1, maxFrames));
+                if (maxFrames > 0) {
+                    limit = Math.min(limit, Math.max(1, maxFrames));
+                }
 
                 // Determine logical screen size from stream metadata when possible; else use first frame
                 int canvasW = -1, canvasH = -1;
@@ -141,6 +68,7 @@ public final class GenericImageDecoder {
                 }
 
                 BufferedImage first = toArgb(reader.read(0));
+                if (first == null) throw new IOException("Failed to decode GIF");
                 if (canvasW <= 0) canvasW = first.getWidth();
                 if (canvasH <= 0) canvasH = first.getHeight();
                 if (maxCanvasSize > 0 && (canvasW > maxCanvasSize || canvasH > maxCanvasSize)) {
@@ -154,12 +82,19 @@ public final class GenericImageDecoder {
                 cg.fillRect(0, 0, canvasW, canvasH);
                 cg.dispose();
 
-                List<BufferedImage> frames = new ArrayList<>();
                 BufferedImage prevCanvas = null;
 
+                int produced = 0;
                 for (int i = 0; i < limit; i++) {
-                    BufferedImage frame = toArgb(reader.read(i));
-                    IIOMetadata meta = reader.getImageMetadata(i);
+                    BufferedImage frame = toArgb(i == 0 ? first : reader.read(i));
+                    if (frame == null) break; // best-effort
+
+                    IIOMetadata meta;
+                    try {
+                        meta = reader.getImageMetadata(i);
+                    } catch (Throwable t) {
+                        meta = null;
+                    }
 
                     GifFrameInfo info = GifFrameInfo.from(meta);
                     if ("restoreToPrevious".equals(info.disposalMethod)) {
@@ -173,7 +108,9 @@ public final class GenericImageDecoder {
                     g.drawImage(frame, info.left, info.top, null);
                     g.dispose();
 
-                    frames.add(deepCopy(canvas));
+                    // Snapshot *before* disposal and hand off
+                    consumer.onFrame(i, deepCopy(canvas));
+                    produced++;
 
                     // Dispose
                     if ("restoreToBackgroundColor".equals(info.disposalMethod)) {
@@ -189,8 +126,7 @@ public final class GenericImageDecoder {
                         dg.dispose();
                     }
                 }
-
-                return frames;
+                return produced;
             } finally {
                 reader.dispose();
             }
@@ -235,6 +171,7 @@ public final class GenericImageDecoder {
         static GifFrameInfo from(IIOMetadata meta) {
             int left = 0, top = 0, width = 0, height = 0;
             String disposal = "none";
+            if (meta == null) return new GifFrameInfo(left, top, width, height, disposal);
             try {
                 String fmt = meta.getNativeMetadataFormatName();
                 javax.imageio.metadata.IIOMetadataNode root = (javax.imageio.metadata.IIOMetadataNode) meta.getAsTree(fmt);

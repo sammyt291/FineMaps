@@ -280,6 +280,16 @@ public class FineMapsConfig {
         @ConfigName("max-video-frames")
         private int maxVideoFrames = 300;
 
+        @Comment("Maximum number of frames to decode/process from an animated image import (GIF/APNG/WEBP).\n" +
+            "Large animated images can consume a lot of memory/CPU; this provides a hard safety cap.")
+        @ConfigName("max-animated-frames")
+        private int maxAnimatedFrames = 300;
+
+        @Comment("How many animation frames to keep cached in memory during playback.\n" +
+            "Frames are stored on disk; this is only a small LRU window to avoid constant disk reads.")
+        @ConfigName("animation-frame-cache-frames")
+        private int animationFrameCacheFrames = 32;
+
         @Comment("How many worker threads to use when rasterising animated imports (GIF/APNG/WEBP/MP4/WEBM).\n" +
             "1 = single-threaded. 0 = auto (uses available processors).")
         @ConfigName("processor-threads")
@@ -327,6 +337,14 @@ public class FineMapsConfig {
 
         public int getMaxVideoFrames() {
             return maxVideoFrames;
+        }
+
+        public int getMaxAnimatedFrames() {
+            return maxAnimatedFrames;
+        }
+
+        public int getAnimationFrameCacheFrames() {
+            return animationFrameCacheFrames;
         }
 
         public int getProcessorThreads() {
