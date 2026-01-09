@@ -117,8 +117,15 @@ public class MultiBlockMapHandler {
         this.heightKey = new NamespacedKey(plugin, "finemaps_height");
         this.rotationKey = new NamespacedKey(plugin, "finemaps_rotation");
         
-        // Check if block displays are supported (prefer them over particles)
-        this.useBlockDisplays = mapManager.getNmsAdapter().supportsBlockDisplays();
+        // Check if block displays are supported (prefer them over particles) AND enabled in config.
+        boolean configAllowsBlockDisplays = true;
+        try {
+            if (mapManager.getConfig() != null && mapManager.getConfig().getMaps() != null) {
+                configAllowsBlockDisplays = mapManager.getConfig().getMaps().isUseBlockDisplays();
+            }
+        } catch (Throwable ignored) {
+        }
+        this.useBlockDisplays = configAllowsBlockDisplays && mapManager.getNmsAdapter().supportsBlockDisplays();
         
         // Find the dust particle (DUST in newer versions, REDSTONE in older)
         this.dustParticle = findDustParticle();
@@ -353,7 +360,12 @@ public class MultiBlockMapHandler {
         
         // Show preview using block displays (modern) or particles (legacy)
         if (useBlockDisplays) {
-            showBlockDisplayPreview(player, placement, hitFace, width, height, canPlace);
+            boolean ok = showBlockDisplayPreview(player, placement, hitFace, width, height, canPlace);
+            if (!ok) {
+                // Safety fallback: if display spawning fails (e.g., unsupported adapter or region/thread restriction on Folia),
+                // still show something.
+                showOutlineParticles(player, previewLocations, hitFace, canPlace);
+            }
         } else {
             showOutlineParticles(player, previewLocations, hitFace, canPlace);
         }
@@ -420,7 +432,7 @@ public class MultiBlockMapHandler {
      * @param anchorLocation The anchor location the player targeted
      * @param valid Whether placement is valid
      */
-    private void showBlockDisplayPreview(Player player, PlacementGeometry placement, BlockFace facing, int width, int height, boolean valid) {
+    private boolean showBlockDisplayPreview(Player player, PlacementGeometry placement, BlockFace facing, int width, int height, boolean valid) {
         // Clear existing display entity (keep state so we can avoid respawns)
         clearPreviewDisplayOnly(player);
 
@@ -473,7 +485,9 @@ public class MultiBlockMapHandler {
         int displayId = mapManager.getNmsAdapter().spawnPreviewBlockDisplay(center, valid, scaleX, scaleY, scaleZ);
         if (displayId != -1) {
             playerPreviewDisplay.put(player.getUniqueId(), displayId);
+            return true;
         }
+        return false;
     }
 
     /**
