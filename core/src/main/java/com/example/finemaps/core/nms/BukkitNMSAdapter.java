@@ -13,10 +13,13 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.MapMeta;
 import org.bukkit.map.MapView;
+import org.bukkit.plugin.Plugin;
 
 import java.lang.reflect.Method;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -39,10 +42,13 @@ public class BukkitNMSAdapter implements NMSAdapter {
     private final Particle flameParticle;
     
     // Display entity tracking
-    private final Map<Integer, Entity> displayEntities = new HashMap<>();
-    private final Map<Integer, Entity> previewDisplayEntities = new HashMap<>();
-    private int nextDisplayId = Integer.MAX_VALUE - 1000000;
-    private int nextPreviewDisplayId = Integer.MAX_VALUE - 2000000;
+    private final Map<Integer, Entity> displayEntities = new ConcurrentHashMap<>();
+    private final Map<Integer, Entity> previewDisplayEntities = new ConcurrentHashMap<>();
+    private final Set<Integer> pendingDisplayIds = ConcurrentHashMap.newKeySet();
+    private final Set<Integer> pendingPreviewDisplayIds = ConcurrentHashMap.newKeySet();
+    private final AtomicInteger nextDisplayId = new AtomicInteger(Integer.MAX_VALUE - 1000000);
+    private final AtomicInteger nextPreviewDisplayId = new AtomicInteger(Integer.MAX_VALUE - 2000000);
+    private volatile boolean warnedFoliaPreviewFailure = false;
     
     // Block display class for preview
     private Class<?> blockDisplayClass;
@@ -321,10 +327,55 @@ public class BukkitNMSAdapter implements NMSAdapter {
             World world = location.getWorld();
             if (world == null) return -1;
             
-            // Use reflection to spawn ItemDisplay
+            // On Folia, this must run on the region thread that owns the target location.
+            if (isFolia) {
+                int displayId = nextDisplayId.getAndIncrement();
+                pendingDisplayIds.add(displayId);
+
+                Plugin plugin = getOwningPlugin();
+                if (plugin == null) {
+                    pendingDisplayIds.remove(displayId);
+                    return -1;
+                }
+
+                int cx = location.getBlockX() >> 4;
+                int cz = location.getBlockZ() >> 4;
+                try {
+                    Bukkit.getRegionScheduler().run(plugin, world, cx, cz, ignored -> {
+                        try {
+                            Entity display = spawnItemDisplayReflection(world, location, mapId);
+                            if (display == null) {
+                                pendingDisplayIds.remove(displayId);
+                                return;
+                            }
+                            if (!pendingDisplayIds.remove(displayId)) {
+                                // Cancelled before spawn completed
+                                try {
+                                    display.remove();
+                                } catch (Throwable ignored2) {
+                                }
+                                return;
+                            }
+                            displayEntities.put(displayId, display);
+                        } catch (Throwable ignored2) {
+                            pendingDisplayIds.remove(displayId);
+                        }
+                    });
+                    return displayId;
+                } catch (Throwable t) {
+                    pendingDisplayIds.remove(displayId);
+                    if (!warnedFoliaPreviewFailure) {
+                        warnedFoliaPreviewFailure = true;
+                        logger.log(Level.WARNING, "Folia rejected ItemDisplay spawn scheduling; map previews may be missing", t);
+                    }
+                    return -1;
+                }
+            }
+
+            // Non-Folia: spawn directly
             Entity display = spawnItemDisplayReflection(world, location, mapId);
             if (display != null) {
-                int displayId = nextDisplayId++;
+                int displayId = nextDisplayId.getAndIncrement();
                 displayEntities.put(displayId, display);
                 return displayId;
             }
@@ -389,9 +440,31 @@ public class BukkitNMSAdapter implements NMSAdapter {
 
     @Override
     public void removeDisplay(int entityId) {
+        pendingDisplayIds.remove(entityId);
         Entity display = displayEntities.remove(entityId);
-        if (display != null && display.isValid()) {
-            display.remove();
+        if (display == null) return;
+
+        if (isFolia) {
+            Plugin plugin = getOwningPlugin();
+            if (plugin != null) {
+                try {
+                    display.getScheduler().run(plugin, ignored -> {
+                        try {
+                            if (display.isValid()) display.remove();
+                        } catch (Throwable ignored2) {
+                        }
+                    }, () -> {
+                    });
+                    return;
+                } catch (Throwable ignored) {
+                    // fall through
+                }
+            }
+        }
+
+        try {
+            if (display.isValid()) display.remove();
+        } catch (Throwable ignored) {
         }
     }
 
@@ -411,10 +484,55 @@ public class BukkitNMSAdapter implements NMSAdapter {
             World world = location.getWorld();
             if (world == null) return -1;
             
-            // Spawn BlockDisplay
+            // On Folia, this must run on the region thread that owns the target location.
+            if (isFolia) {
+                int displayId = nextPreviewDisplayId.getAndIncrement();
+                pendingPreviewDisplayIds.add(displayId);
+
+                Plugin plugin = getOwningPlugin();
+                if (plugin == null) {
+                    pendingPreviewDisplayIds.remove(displayId);
+                    return -1;
+                }
+
+                int cx = location.getBlockX() >> 4;
+                int cz = location.getBlockZ() >> 4;
+                try {
+                    Bukkit.getRegionScheduler().run(plugin, world, cx, cz, ignored -> {
+                        try {
+                            Entity display = spawnBlockDisplayReflection(world, location, valid, scaleX, scaleY, scaleZ);
+                            if (display == null) {
+                                pendingPreviewDisplayIds.remove(displayId);
+                                return;
+                            }
+                            if (!pendingPreviewDisplayIds.remove(displayId)) {
+                                // Cancelled before spawn completed
+                                try {
+                                    display.remove();
+                                } catch (Throwable ignored2) {
+                                }
+                                return;
+                            }
+                            previewDisplayEntities.put(displayId, display);
+                        } catch (Throwable ignored2) {
+                            pendingPreviewDisplayIds.remove(displayId);
+                        }
+                    });
+                    return displayId;
+                } catch (Throwable t) {
+                    pendingPreviewDisplayIds.remove(displayId);
+                    if (!warnedFoliaPreviewFailure) {
+                        warnedFoliaPreviewFailure = true;
+                        logger.log(Level.WARNING, "Folia rejected BlockDisplay spawn scheduling; placement preview may be missing", t);
+                    }
+                    return -1;
+                }
+            }
+
+            // Non-Folia: spawn directly
             Entity display = spawnBlockDisplayReflection(world, location, valid, scaleX, scaleY, scaleZ);
             if (display != null) {
-                int displayId = nextPreviewDisplayId++;
+                int displayId = nextPreviewDisplayId.getAndIncrement();
                 previewDisplayEntities.put(displayId, display);
                 return displayId;
             }
@@ -526,9 +644,31 @@ public class BukkitNMSAdapter implements NMSAdapter {
 
     @Override
     public void removePreviewDisplay(int entityId) {
+        pendingPreviewDisplayIds.remove(entityId);
         Entity display = previewDisplayEntities.remove(entityId);
-        if (display != null && display.isValid()) {
-            display.remove();
+        if (display == null) return;
+
+        if (isFolia) {
+            Plugin plugin = getOwningPlugin();
+            if (plugin != null) {
+                try {
+                    display.getScheduler().run(plugin, ignored -> {
+                        try {
+                            if (display.isValid()) display.remove();
+                        } catch (Throwable ignored2) {
+                        }
+                    }, () -> {
+                    });
+                    return;
+                } catch (Throwable ignored) {
+                    // fall through
+                }
+            }
+        }
+
+        try {
+            if (display.isValid()) display.remove();
+        } catch (Throwable ignored) {
         }
     }
 
@@ -605,5 +745,14 @@ public class BukkitNMSAdapter implements NMSAdapter {
     @Override
     public int getMinorVersion() {
         return minorVersion;
+    }
+
+    private Plugin getOwningPlugin() {
+        try {
+            Plugin p = Bukkit.getPluginManager().getPlugin("FineMaps");
+            return (p != null && p.isEnabled()) ? p : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 }
