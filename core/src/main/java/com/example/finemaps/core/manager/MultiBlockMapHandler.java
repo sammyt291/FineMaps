@@ -117,8 +117,15 @@ public class MultiBlockMapHandler {
         this.heightKey = new NamespacedKey(plugin, "finemaps_height");
         this.rotationKey = new NamespacedKey(plugin, "finemaps_rotation");
         
-        // Check if block displays are supported (prefer them over particles)
-        this.useBlockDisplays = mapManager.getNmsAdapter().supportsBlockDisplays();
+        // Check if block displays are supported (prefer them over particles) AND enabled in config.
+        boolean configAllowsBlockDisplays = true;
+        try {
+            if (mapManager.getConfig() != null && mapManager.getConfig().getMaps() != null) {
+                configAllowsBlockDisplays = mapManager.getConfig().getMaps().isUseBlockDisplays();
+            }
+        } catch (Throwable ignored) {
+        }
+        this.useBlockDisplays = configAllowsBlockDisplays && mapManager.getNmsAdapter().supportsBlockDisplays();
         
         // Find the dust particle (DUST in newer versions, REDSTONE in older)
         this.dustParticle = findDustParticle();
