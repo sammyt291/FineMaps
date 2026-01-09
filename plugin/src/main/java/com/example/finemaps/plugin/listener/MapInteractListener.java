@@ -28,7 +28,7 @@ public class MapInteractListener implements Listener {
     private final FineMapsConfig config;
     
     // Track active preview tasks per player
-    private final Map<UUID, Object> previewTasks = new HashMap<>();
+    private final Map<UUID, FineMapsScheduler.Task> previewTasks = new HashMap<>();
     private final Map<UUID, Integer> activeDisplays = new HashMap<>();
 
     public MapInteractListener(FineMapsPlugin plugin) {
@@ -82,7 +82,7 @@ public class MapInteractListener implements Listener {
         UUID playerId = player.getUniqueId();
         
         // Create repeating task for particle outline
-        Object task = FineMapsScheduler.runForEntityRepeating(plugin, player, () -> {
+        FineMapsScheduler.Task task = FineMapsScheduler.runForEntityRepeating(plugin, player, () -> {
             Player p = plugin.getServer().getPlayer(playerId);
             if (p == null || !p.isOnline()) {
                 cancelPreview(playerId);
@@ -95,15 +95,17 @@ public class MapInteractListener implements Listener {
             // Show particle outline
             nmsAdapter.showParticleOutline(p, loc);
         }, 0L, 5L); // Every 5 ticks (0.25 seconds)
-        
-        previewTasks.put(playerId, task);
+
+        if (task != null) {
+            previewTasks.put(playerId, task);
+        }
     }
 
     private void cancelPreview(UUID playerId) {
         // Cancel particle task
-        Object task = previewTasks.remove(playerId);
+        FineMapsScheduler.Task task = previewTasks.remove(playerId);
         if (task != null) {
-            FineMapsScheduler.cancel(task);
+            task.cancel();
         }
         
         // Remove display entity
@@ -117,8 +119,8 @@ public class MapInteractListener implements Listener {
      * Clean up all previews on plugin disable.
      */
     public void cleanup() {
-        for (Object task : previewTasks.values()) {
-            FineMapsScheduler.cancel(task);
+        for (FineMapsScheduler.Task task : previewTasks.values()) {
+            if (task != null) task.cancel();
         }
         previewTasks.clear();
         

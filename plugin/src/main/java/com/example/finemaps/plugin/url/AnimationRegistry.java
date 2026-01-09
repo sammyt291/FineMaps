@@ -50,7 +50,7 @@ public final class AnimationRegistry {
      * than our runtime MapViewManager mapping (e.g. after restarts).
      */
     private volatile Map<Long, Map<UUID, Set<Integer>>> viewersByDbMapId = new HashMap<>();
-    private Object viewerScanTask = null;
+    private FineMapsScheduler.Task viewerScanTask = null;
 
     public AnimationRegistry(Plugin plugin, MapManager mapManager, String cacheFolderName, int frameCacheFrames) {
         this.plugin = plugin;
@@ -293,7 +293,7 @@ public final class AnimationRegistry {
 
     private void stopViewerScan() {
         if (viewerScanTask != null) {
-            FineMapsScheduler.cancel(viewerScanTask);
+            viewerScanTask.cancel();
             viewerScanTask = null;
         }
         viewersByDbMapId = new HashMap<>();
@@ -423,7 +423,7 @@ public final class AnimationRegistry {
         private final int multiHeight;
         private final List<byte[][]> multiFrames;
 
-        private Object taskHandle = null;
+        private FineMapsScheduler.Task taskHandle = null;
         private volatile boolean paused = false;
         private volatile long startEpochMs = System.currentTimeMillis();
         private volatile long offsetMs = 0L;
@@ -485,7 +485,7 @@ public final class AnimationRegistry {
 
         void stop() {
             if (taskHandle != null) {
-                FineMapsScheduler.cancel(taskHandle);
+                taskHandle.cancel();
                 taskHandle = null;
             }
         }

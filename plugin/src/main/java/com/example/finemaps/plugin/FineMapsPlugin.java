@@ -10,6 +10,7 @@ import com.example.finemaps.core.manager.MapManager;
 import com.example.finemaps.core.manager.MultiBlockMapHandler;
 import com.example.finemaps.api.nms.NMSAdapter;
 import com.example.finemaps.core.nms.NMSAdapterFactory;
+import com.example.finemaps.core.util.FineMapsScheduler;
 import com.example.finemaps.plugin.command.DebugCommand;
 import com.example.finemaps.plugin.command.FineMapsCommand;
 import com.example.finemaps.plugin.url.AnimationRegistry;
@@ -297,72 +298,19 @@ public class FineMapsPlugin extends JavaPlugin {
             }
         };
 
-        // Folia does not support Bukkit's async repeating scheduler and will throw UOE.
-        // Try Folia's schedulers first (via reflection); on non-Folia this will fail and we fall back.
-        if (scheduleFoliaRepeatingTask(interval, cleanup)) return;
-
-        // If we're on Folia and scheduling failed, do NOT fall back to Bukkit scheduler.
-        // (It will throw UnsupportedOperationException at runtime.)
-        if (NMSAdapterFactory.isFolia()) {
-            getLogger().warning("Folia detected but could not schedule cleanup task; skipping cleanup scheduler to avoid BukkitScheduler UnsupportedOperationException.");
+        // Folia does not support Bukkit's legacy repeating schedulers.
+        // On Folia, use the async scheduler (time-based) to preserve "async" cleanup semantics.
+        if (FineMapsScheduler.isFolia()) {
+            try {
+                long ms = Math.max(1L, (long) interval) * 50L;
+                Bukkit.getAsyncScheduler().runAtFixedRate(this, ignored -> cleanup.run(), ms, ms, TimeUnit.MILLISECONDS);
+            } catch (Throwable t) {
+                getLogger().log(Level.WARNING, "Failed to schedule cleanup task on Folia", t);
+            }
             return;
         }
 
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, cleanup, interval, interval);
-    }
-
-    /**
-     * Attempts to schedule a repeating task on Folia using the supported schedulers.
-     * Uses reflection to avoid a hard dependency on Paper/Folia APIs at compile time.
-     *
-     * @param intervalTicks interval in ticks
-     * @param runnable task body
-     * @return true if scheduled successfully
-     */
-    private boolean scheduleFoliaRepeatingTask(int intervalTicks, Runnable runnable) {
-        // Preferred: Global region scheduler (tick-based).
-        try {
-            Object globalRegionScheduler = Bukkit.class.getMethod("getGlobalRegionScheduler").invoke(null);
-            if (globalRegionScheduler != null) {
-                // GlobalRegionScheduler#runAtFixedRate(Plugin, Consumer<ScheduledTask>, long, long)
-                java.lang.reflect.Method m = globalRegionScheduler.getClass().getMethod(
-                    "runAtFixedRate",
-                    org.bukkit.plugin.Plugin.class,
-                    Consumer.class,
-                    long.class,
-                    long.class
-                );
-                Consumer<Object> consumer = ignoredTask -> runnable.run();
-                m.invoke(globalRegionScheduler, this, consumer, (long) intervalTicks, (long) intervalTicks);
-                return true;
-            }
-        } catch (Throwable ignored) {
-            // Fall through to async scheduler attempt.
-        }
-
-        // Fallback: Async scheduler (time-based). Convert ticks to milliseconds (best-effort).
-        try {
-            Object asyncScheduler = Bukkit.class.getMethod("getAsyncScheduler").invoke(null);
-            if (asyncScheduler != null) {
-                // AsyncScheduler#runAtFixedRate(Plugin, Consumer<ScheduledTask>, long, long, TimeUnit)
-                java.lang.reflect.Method m = asyncScheduler.getClass().getMethod(
-                    "runAtFixedRate",
-                    org.bukkit.plugin.Plugin.class,
-                    Consumer.class,
-                    long.class,
-                    long.class,
-                    TimeUnit.class
-                );
-                long periodMs = Math.max(1L, (long) intervalTicks * 50L);
-                Consumer<Object> consumer = ignoredTask -> runnable.run();
-                m.invoke(asyncScheduler, this, consumer, periodMs, periodMs, TimeUnit.MILLISECONDS);
-                return true;
-            }
-        } catch (Throwable t) {
-            getLogger().log(Level.WARNING, "Failed to schedule cleanup task using Folia schedulers", t);
-        }
-
-        return false;
     }
 
     /**
