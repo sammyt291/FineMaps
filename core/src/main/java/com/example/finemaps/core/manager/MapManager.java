@@ -374,6 +374,31 @@ public class MapManager implements FineMapsAPI {
         return item;
     }
 
+    /**
+     * Creates a map item with an art name displayed.
+     *
+     * @param mapId The map ID
+     * @param artName The art name to display (or null for no name)
+     * @return The map ItemStack
+     */
+    public ItemStack createMapItemWithName(long mapId, String artName) {
+        ItemStack item = createMapItem(mapId);
+        
+        if (artName != null && !artName.isEmpty()) {
+            ItemMeta meta = item.getItemMeta();
+            if (meta != null) {
+                meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map: " + artName);
+                List<String> lore = new ArrayList<>();
+                lore.add(org.bukkit.ChatColor.GRAY + "Size: 1x1");
+                meta.setLore(lore);
+                hideVanillaMapTooltip(meta);
+                item.setItemMeta(meta);
+            }
+        }
+        
+        return item;
+    }
+
     @Override
     public ItemStack[][] createMultiBlockMapItems(long groupId) {
         Optional<MultiBlockMap> optMap = getMultiBlockMap(groupId).join();

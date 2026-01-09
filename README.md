@@ -22,19 +22,11 @@ A Minecraft server plugin that stores map pixel data in a database (SQLite or My
 | Minecraft | Status | Notes |
 |-----------|--------|-------|
 | 1.21.x | ✅ Supported | Folia supported (`folia-supported: true`) |
-| 1.20.x | ✅ Supported |  |
-| 1.19.4+ | ✅ Supported | Display entities available, particle preview still supported |
-| 1.19.0–1.19.3 | ✅ Supported | Particle previews |
-| 1.18.x | ✅ Supported | Particle previews |
-| 1.17.x | ✅ Supported | Particle previews |
-| 1.16.x | ✅ Supported | Particle previews |
-| 1.15.x | ✅ Supported | Particle previews |
-| 1.14.x | ✅ Supported | Minimum supported version |
 
 ## Requirements
 
-- Minecraft server: Spigot/Paper/Folia **1.14+**
-- Java: **8+** (use the server-recommended Java for your MC version; e.g. Java 17 for 1.18+)
+- Minecraft server: Spigot/Paper/Folia **1.21+**
+- Java: **21+**
 - Optional: ProtocolLib (recommended)
 - Optional: Vault + an economy plugin (for buy/economy features)
 
@@ -102,6 +94,11 @@ images:
   url-cache-folder: url-cache
   max-url-download-size: 8192K
   default-animated-fps: 20
+  ffmpeg-path: ffmpeg
+  max-video-frames: 300
+  max-animated-frames: 300
+  animation-frame-cache-frames: 32
+  processor-threads: 0
 
 # Vault economy integration
 economy:
@@ -142,6 +139,7 @@ Main command: `/finemaps` (aliases: `/fm`, `/maps`)
 | `/finemaps config get <path>` | Read a config value by path | `finemaps.config` |
 | `/finemaps config set <path> <value>` | Set a config value by path (reloads config) | `finemaps.config` |
 | `/finemaps config reset <path>` | Reset a config value by path to default | `finemaps.config` |
+| `/finemaps anim <restart\|pause\|skip <time>>` | Control an animated map (held or looked-at item frame). `skip` accepts `h:m:s`, `m:s`, or `s` format. | `finemaps.anim` |
 | `/finemaps debug <...>` | Debug/load-testing suite | `finemaps.admin` |
 
 ### Notes
@@ -174,6 +172,7 @@ All debug subcommands require `finemaps.admin`:
 | `finemaps.info` | View map info | op |
 | `finemaps.reload` | Reload configuration | op |
 | `finemaps.stats` | View statistics | op |
+| `finemaps.anim` | Control animated maps (`/finemaps anim`) | op |
 | `finemaps.buy` | Buy map arts (and buy via GUI) | true |
 | `finemaps.gui` | Open the art browser GUI | true |
 | `finemaps.config` | Use `/finemaps config get/set/reset` | op |
