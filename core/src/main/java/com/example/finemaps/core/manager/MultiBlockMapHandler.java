@@ -231,7 +231,14 @@ public class MultiBlockMapHandler {
             int height = groupId > 0 ? mapManager.getMultiBlockHeight(held) : 1;
             showPlacementPreview(p, held, width, height);
         }, 0L, 4L); // Update every 4 ticks (0.2s)
-        
+
+        // Some schedulers (especially on Folia builds with differing APIs) may fail to schedule and return null.
+        // ConcurrentHashMap does not allow null values, so treat this as "preview unavailable" and bail quietly.
+        if (task == null) {
+            playersWithPreview.remove(playerId);
+            return;
+        }
+
         playerPreviewTasks.put(playerId, task);
     }
     
