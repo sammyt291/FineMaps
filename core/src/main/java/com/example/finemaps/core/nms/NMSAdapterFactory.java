@@ -128,12 +128,50 @@ public final class NMSAdapterFactory {
      * @return true if Folia
      */
     public static boolean isFolia() {
+        // Server name
+        try {
+            String name = Bukkit.getName();
+            if (name != null && name.equalsIgnoreCase("Folia")) return true;
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (Bukkit.getServer() != null) {
+                String name = Bukkit.getServer().getName();
+                if (name != null && name.equalsIgnoreCase("Folia")) return true;
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // Version string (case-insensitive)
         try {
             String v = Bukkit.getVersion();
-            return v != null && v.contains("Folia");
+            if (v != null && v.toLowerCase().contains("folia")) return true;
         } catch (Throwable ignored) {
-            return false;
         }
+
+        // Presence of Folia classes
+        try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
+            return true;
+        } catch (ClassNotFoundException ignored) {
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class.forName("io.papermc.paper.threadedregions.scheduler.GlobalRegionScheduler");
+            return true;
+        } catch (ClassNotFoundException ignored) {
+        } catch (Throwable ignored) {
+        }
+
+        // Presence of Folia scheduler accessors on Bukkit
+        try {
+            Bukkit.class.getMethod("getGlobalRegionScheduler");
+            return true;
+        } catch (NoSuchMethodException ignored) {
+        } catch (Throwable ignored) {
+        }
+
+        return false;
     }
 
     /**

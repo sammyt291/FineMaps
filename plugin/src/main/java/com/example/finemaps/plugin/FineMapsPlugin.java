@@ -299,18 +299,25 @@ public class FineMapsPlugin extends JavaPlugin {
         };
 
         // Folia does not support Bukkit's legacy repeating schedulers.
-        // On Folia, use the async scheduler (time-based) to preserve "async" cleanup semantics.
-        if (FineMapsScheduler.isFolia()) {
+        // On Folia, use the async scheduler (wall-clock based) to preserve "async" cleanup semantics.
+        try {
+            if (FineMapsScheduler.isFolia()) {
+                long ms = Math.max(1L, (long) interval) * 50L;
+                Bukkit.getAsyncScheduler().runAtFixedRate(this, ignored -> cleanup.run(), ms, ms, TimeUnit.MILLISECONDS);
+                return;
+            }
+            Bukkit.getScheduler().runTaskTimerAsynchronously(this, cleanup, interval, interval);
+        } catch (UnsupportedOperationException uoe) {
+            // Defensive fallback: if Folia detection ever fails, don't crash enable.
             try {
                 long ms = Math.max(1L, (long) interval) * 50L;
                 Bukkit.getAsyncScheduler().runAtFixedRate(this, ignored -> cleanup.run(), ms, ms, TimeUnit.MILLISECONDS);
             } catch (Throwable t) {
-                getLogger().log(Level.WARNING, "Failed to schedule cleanup task on Folia", t);
+                getLogger().log(Level.WARNING, "Failed to schedule cleanup task", t);
             }
-            return;
+        } catch (Throwable t) {
+            getLogger().log(Level.WARNING, "Failed to schedule cleanup task", t);
         }
-
-        Bukkit.getScheduler().runTaskTimerAsynchronously(this, cleanup, interval, interval);
     }
 
     /**
