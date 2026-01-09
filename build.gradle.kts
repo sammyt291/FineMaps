@@ -45,14 +45,16 @@ configure(subprojects.filter { it.name == "api" }) {
 // Core module targets Java 17 (required by ProtocolLib 5.4.0)
 configure(subprojects.filter { it.name == "core" }) {
     tasks.withType<JavaCompile> {
-        options.release.set(17)
+        // Paper 1.21+ (and Folia) require Java 21
+        options.release.set(21)
     }
 }
 
 // Plugin module can use modern Java
 configure(subprojects.filter { it.name == "plugin" }) {
     tasks.withType<JavaCompile> {
-        options.release.set(17)
+        // Paper 1.21+ (and Folia) require Java 21
+        options.release.set(21)
     }
 }
 

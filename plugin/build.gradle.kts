@@ -11,7 +11,8 @@ dependencies {
     implementation(project(":api"))
     implementation(project(":core"))
     
-    compileOnly("org.spigotmc:spigot-api:1.21.1-R0.1-SNAPSHOT")
+    // Paper API includes Folia scheduler APIs (compileOnly - provided by the server)
+    compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
     
     // RedLib for config management - shade it
     implementation("com.github.Redempt:RedLib:6.5.8")
@@ -20,7 +21,10 @@ dependencies {
     compileOnly("net.dmulloy2:ProtocolLib:5.4.0")
 
     // Vault API (economy) - provided at runtime (JitPack)
-    compileOnly("com.github.MilkBowl:VaultAPI:1.7")
+    compileOnly("com.github.MilkBowl:VaultAPI:1.7") {
+        // Avoid pulling an old Bukkit API that conflicts with Paper's provided Bukkit API.
+        exclude(group = "org.bukkit", module = "bukkit")
+    }
 
     // ImageIO plugins for additional formats (shaded into the plugin)
     // - WEBP (including animated WebP when supported by reader)

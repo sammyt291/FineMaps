@@ -53,7 +53,7 @@ public class DebugCommand {
     private volatile SeedState seedState;
 
     // Only allow one placement runner at a time to avoid consuming duplicates
-    private volatile Object activePlaceTask;
+    private volatile FineMapsScheduler.Task activePlaceTask;
 
     public DebugCommand(FineMapsPlugin plugin) {
         this.plugin = plugin;
@@ -106,9 +106,9 @@ public class DebugCommand {
     }
 
     private boolean handleStop(Player player) {
-        Object task = activePlaceTask;
+        FineMapsScheduler.Task task = activePlaceTask;
         if (task != null) {
-            FineMapsScheduler.cancel(task);
+            task.cancel();
             activePlaceTask = null;
             player.sendMessage(ChatColor.GREEN + "Stopped map placement task.");
         } else {
@@ -269,7 +269,7 @@ public class DebugCommand {
 
         // Cancel any existing runner
         if (activePlaceTask != null) {
-            FineMapsScheduler.cancel(activePlaceTask);
+            activePlaceTask.cancel();
             activePlaceTask = null;
         }
 

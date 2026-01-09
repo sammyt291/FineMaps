@@ -128,29 +128,12 @@ public final class NMSAdapterFactory {
      * @return true if Folia
      */
     public static boolean isFolia() {
-        // Prefer checking for the Folia scheduler entry points on Bukkit (most stable across versions).
         try {
-            Bukkit.class.getMethod("getGlobalRegionScheduler");
-            Bukkit.class.getMethod("getAsyncScheduler");
-            return true;
-        } catch (NoSuchMethodException ignored) {
-            // Fall through to legacy/older class checks.
+            String v = Bukkit.getVersion();
+            return v != null && v.contains("Folia");
+        } catch (Throwable ignored) {
+            return false;
         }
-
-        // Older/alternate Folia builds exposed these classes.
-        for (String cn : new String[] {
-            "io.papermc.paper.threadedregions.RegionizedServer",
-            "io.papermc.paper.threadedregions.TickRegionScheduler",
-            "io.papermc.paper.threadedregions.scheduler.FoliaEntityScheduler"
-        }) {
-            try {
-                Class.forName(cn);
-                return true;
-            } catch (ClassNotFoundException ignored) {
-            }
-        }
-
-        return false;
     }
 
     /**

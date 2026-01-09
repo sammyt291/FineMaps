@@ -4,18 +4,20 @@ import com.example.finemaps.core.nms.NMSAdapterFactory;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Entity;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
- * Scheduling utilities that are compatible with both Paper/Spigot and Folia.
+ * Scheduling utilities that work on both Bukkit/Paper and Folia.
  *
- * <p>On Folia, Bukkit's legacy scheduler methods throw {@link UnsupportedOperationException}.
- * Folia provides region/global/async schedulers instead; we access them via reflection so this
- * project can keep compiling against the standard Bukkit API.</p>
+ * <p>On Folia, Bukkit's legacy scheduler methods throw {@link UnsupportedOperationException}, so we
+ * route work through Folia schedulers. Per user request we detect Folia via
+ * {@code Bukkit.getVersion().contains("Folia")}.</p>
+ *
+ * <p>This project is a single JAR: Folia/Paper-only APIs must only be invoked when running on Folia.</p>
  */
 public final class FineMapsScheduler {
 
@@ -23,187 +25,211 @@ public final class FineMapsScheduler {
     }
 
     /**
-     * Returns true when running on a Folia-like runtime where Bukkit's legacy scheduler is unsupported.
-     *
-     * <p>We detect this by probing for Folia scheduler entry points on {@link Bukkit} instead of relying
-     * on class names, which can vary across builds.</p>
+     * Wrapper around either a Folia ScheduledTask or a BukkitTask.
      */
-    private static boolean isFoliaRuntime() {
+    public static class Task {
+        private final Object foliaTask;
+        private final BukkitTask bukkitTask;
+
+        public Task(Object foliaTask) {
+            this.foliaTask = foliaTask;
+            this.bukkitTask = null;
+        }
+
+        public Task(BukkitTask bukkitTask) {
+            this.bukkitTask = bukkitTask;
+            this.foliaTask = null;
+        }
+
+        public void cancel() {
+            if (foliaTask != null) {
+                // Route cancellation on Folia. Avoid exposing Paper types in fields/signatures.
+                try {
+                    // This cast is only resolved if executed.
+                    ((io.papermc.paper.threadedregions.scheduler.ScheduledTask) foliaTask).cancel();
+                    return;
+                } catch (Throwable ignored) {
+                }
+                try {
+                    foliaTask.getClass().getMethod("cancel").invoke(foliaTask);
+                    return;
+                } catch (Throwable ignored) {
+                }
+            }
+            if (bukkitTask != null) {
+                try {
+                    bukkitTask.cancel();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    /**
+     * Per user request: determine Folia via Bukkit version string.
+     */
+    public static boolean isFolia() {
         try {
-            Bukkit.class.getMethod("getGlobalRegionScheduler");
-            return true;
+            String v = Bukkit.getVersion();
+            return v != null && v.contains("Folia");
         } catch (Throwable ignored) {
             return false;
         }
     }
 
-    /**
-     * Opaque handle for a chained repeating task built from runDelayed calls.
-     */
-    private static final class ChainedRepeatingHandle {
-        private volatile boolean cancelled = false;
-        private volatile Object lastScheduledTask = null;
-
-        public void cancel() {
-            cancelled = true;
-            FineMapsScheduler.cancel(lastScheduledTask);
-        }
-    }
-
-    /**
-     * Runs a task as soon as possible on the "main" execution context.
-     *
-     * <p>On Folia this uses the global region scheduler. On non-Folia it uses Bukkit's scheduler.</p>
-     */
     public static void runSync(Plugin plugin, Runnable runnable) {
         if (plugin == null || runnable == null) return;
 
-        // Prefer Folia's global region scheduler when available.
-        if (tryRunGlobal(plugin, runnable)) return;
-
-        BukkitScheduler scheduler = Bukkit.getScheduler();
-        scheduler.runTask(plugin, runnable);
+        if (isFolia()) {
+            try {
+                Bukkit.getGlobalRegionScheduler().run(plugin, ignored -> runnable.run());
+                return;
+            } catch (Throwable ignored) {
+                // fall through
+            }
+        }
+        Bukkit.getScheduler().runTask(plugin, runnable);
     }
 
-    /**
-     * Runs a task later (tick delay) on the "main" execution context.
-     *
-     * <p>On Folia this uses the global region scheduler. On non-Folia it uses Bukkit's scheduler.</p>
-     */
     public static void runSyncDelayed(Plugin plugin, Runnable runnable, long delayTicks) {
         if (plugin == null || runnable == null) return;
         if (delayTicks < 0) delayTicks = 0;
 
-        // Prefer Folia's global region scheduler when available.
-        if (tryRunGlobalDelayed(plugin, runnable, delayTicks)) return;
-
+        if (isFolia()) {
+            try {
+                Bukkit.getGlobalRegionScheduler().runDelayed(plugin, ignored -> runnable.run(), delayTicks);
+                return;
+            } catch (Throwable ignored) {
+                // fall through
+            }
+        }
         Bukkit.getScheduler().runTaskLater(plugin, runnable, delayTicks);
     }
 
-    /**
-     * Runs a task asynchronously.
-     *
-     * <p>On Folia this uses the async scheduler. On non-Folia it uses Bukkit's scheduler.</p>
-     */
     public static void runAsync(Plugin plugin, Runnable runnable) {
         if (plugin == null || runnable == null) return;
 
-        // Prefer Folia's async scheduler when available.
-        if (tryRunAsyncNow(plugin, runnable)) return;
-
+        if (isFolia()) {
+            try {
+                Bukkit.getAsyncScheduler().runNow(plugin, ignored -> runnable.run());
+                return;
+            } catch (Throwable ignored) {
+                // fall through
+            }
+        }
         Bukkit.getScheduler().runTaskAsynchronously(plugin, runnable);
     }
 
-    /**
-     * Runs a task on an entity's scheduler when available (Folia), otherwise falls back to {@link #runSync(Plugin, Runnable)}.
-     *
-     * <p>This is the safest option for player/entity interactions on Folia.</p>
-     */
     public static void runForEntity(Plugin plugin, Entity entity, Runnable runnable) {
         if (plugin == null || runnable == null) return;
 
-        // Prefer Folia's per-entity scheduler when available.
-        if (entity != null && tryRunEntity(plugin, entity, runnable)) return;
-
+        if (isFolia() && entity != null) {
+            try {
+                entity.getScheduler().run(plugin, ignored -> runnable.run(), () -> {
+                });
+                return;
+            } catch (Throwable ignored) {
+                // fall through
+            }
+        }
         runSync(plugin, runnable);
     }
 
-    /**
-     * Runs a task later (tick delay) on an entity's scheduler when available (Folia), otherwise falls back
-     * to {@link #runSyncDelayed(Plugin, Runnable, long)}.
-     */
     public static void runForEntityDelayed(Plugin plugin, Entity entity, Runnable runnable, long delayTicks) {
         if (plugin == null || runnable == null) return;
         if (delayTicks < 0) delayTicks = 0;
 
-        // Prefer Folia's per-entity scheduler when available.
-        if (entity != null && tryRunEntityDelayed(plugin, entity, runnable, delayTicks)) return;
-
+        if (isFolia() && entity != null) {
+            try {
+                entity.getScheduler().runDelayed(plugin, ignored -> runnable.run(), () -> {
+                }, delayTicks);
+                return;
+            } catch (Throwable ignored) {
+                // fall through
+            }
+        }
         runSyncDelayed(plugin, runnable, delayTicks);
     }
 
     /**
-     * Schedules a repeating task (tick-based) in a Folia-safe way.
-     *
-     * <p>On Folia this uses the global region scheduler. On non-Folia it uses Bukkit's scheduler.</p>
-     *
-     * @return an opaque handle that can be cancelled via {@link #cancel(Object)} (may be null on failure)
+     * Tick-based repeating work. On Folia uses global region scheduler; elsewhere uses Bukkit scheduler.
      */
-    public static Object runSyncRepeating(Plugin plugin, Runnable runnable, long initialDelayTicks, long periodTicks) {
+    public static Task runSyncRepeating(Plugin plugin, Runnable runnable, long initialDelayTicks, long periodTicks) {
         if (plugin == null || runnable == null) return null;
         if (initialDelayTicks < 0) initialDelayTicks = 0;
         if (periodTicks < 1) periodTicks = 1;
 
-        // Prefer Folia's global region scheduler when available.
-        Object handle = tryRunGlobalAtFixedRate(plugin, runnable, initialDelayTicks, periodTicks);
-        if (handle != null) return handle;
-
-        // Some Folia builds may not expose runAtFixedRate on all schedulers.
-        // Build a repeating task from chained runDelayed calls instead.
-        Object chained = tryRunGlobalChainedRepeating(plugin, runnable, initialDelayTicks, periodTicks);
-        if (chained != null) return chained;
-
-        // On Folia we must NOT fall back to Bukkit's legacy scheduler.
-        if (isFoliaRuntime() || NMSAdapterFactory.isFolia()) {
-            return null;
+        if (isFolia()) {
+            try {
+                Object folia = Bukkit.getGlobalRegionScheduler()
+                    .runAtFixedRate(plugin, ignored -> runnable.run(), initialDelayTicks, periodTicks);
+                return new Task(folia);
+            } catch (Throwable ignored) {
+                // Fallback: chain runDelayed (more robust across scheduler API drift)
+                Task chained = chainGlobalDelayed(plugin, runnable, initialDelayTicks, periodTicks);
+                if (chained != null) return chained;
+                return null;
+            }
         }
 
-        return Bukkit.getScheduler().runTaskTimer(plugin, runnable, initialDelayTicks, periodTicks);
+        return new Task(Bukkit.getScheduler().runTaskTimer(plugin, runnable, initialDelayTicks, periodTicks));
     }
 
     /**
-     * Schedules a repeating task on an entity's scheduler when available (Folia).
-     * This is typically the safest option for per-player/per-entity repeating work on Folia.
-     *
-     * @return an opaque handle that can be cancelled via {@link #cancel(Object)} (may be null on failure)
+     * Tick-based repeating work scoped to an entity. On Folia uses entity scheduler; elsewhere uses global repeating.
      */
-    public static Object runForEntityRepeating(Plugin plugin,
-                                               Entity entity,
-                                               Runnable runnable,
-                                               long initialDelayTicks,
-                                               long periodTicks) {
+    public static Task runForEntityRepeating(Plugin plugin,
+                                             Entity entity,
+                                             Runnable runnable,
+                                             long initialDelayTicks,
+                                             long periodTicks) {
         if (plugin == null || runnable == null) return null;
         if (initialDelayTicks < 0) initialDelayTicks = 0;
         if (periodTicks < 1) periodTicks = 1;
 
-        // Prefer Folia's per-entity scheduler when available.
-        if (entity != null) {
-            Object handle = tryRunEntityAtFixedRate(plugin, entity, runnable, initialDelayTicks, periodTicks);
-            if (handle != null) return handle;
-
-            Object chained = tryRunEntityChainedRepeating(plugin, entity, runnable, initialDelayTicks, periodTicks);
-            if (chained != null) return chained;
+        if (isFolia() && entity != null) {
+            try {
+                Object folia = entity.getScheduler()
+                    .runAtFixedRate(plugin, ignored -> runnable.run(), () -> {
+                    }, initialDelayTicks, periodTicks);
+                return new Task(folia);
+            } catch (Throwable ignored) {
+                Task chained = chainEntityDelayed(plugin, entity, runnable, initialDelayTicks, periodTicks);
+                if (chained != null) return chained;
+                return null;
+            }
         }
 
         return runSyncRepeating(plugin, runnable, initialDelayTicks, periodTicks);
     }
 
+    public static void cancel(Task task) {
+        if (task == null) return;
+        task.cancel();
+    }
+
     /**
-     * Cancels a task handle returned by {@link #runSyncRepeating(Plugin, Runnable, long, long)} or
-     * {@link #runForEntityRepeating(Plugin, Entity, Runnable, long, long)}.
+     * Backwards compatibility: cancel any task handle.
      */
     public static void cancel(Object taskHandle) {
         if (taskHandle == null) return;
-        try {
-            if (taskHandle instanceof BukkitTask) {
-                ((BukkitTask) taskHandle).cancel();
-                return;
-            }
-        } catch (Throwable ignored) {
+        if (taskHandle instanceof Task) {
+            ((Task) taskHandle).cancel();
+            return;
         }
-
+        if (taskHandle instanceof BukkitTask) {
+            try {
+                ((BukkitTask) taskHandle).cancel();
+            } catch (Throwable ignored) {
+            }
+            return;
+        }
         try {
-            // Paper/Folia ScheduledTask has cancel()
-            java.lang.reflect.Method cancel = taskHandle.getClass().getMethod("cancel");
-            cancel.invoke(taskHandle);
+            taskHandle.getClass().getMethod("cancel").invoke(taskHandle);
         } catch (Throwable ignored) {
         }
     }
 
-    /**
-     * Runs a task later using wall-clock time. This is provided as an escape hatch for situations where
-     * a simple delay is needed but tick-based scheduling is not required.
-     */
     public static void runLaterWallClock(Runnable runnable, long delay, TimeUnit unit) {
         if (runnable == null) return;
         if (delay < 0) delay = 0;
@@ -211,302 +237,86 @@ public final class FineMapsScheduler {
         java.util.concurrent.CompletableFuture.delayedExecutor(delay, unit).execute(runnable);
     }
 
-    private static boolean tryRunGlobal(Plugin plugin, Runnable runnable) {
-        try {
-            Object globalRegionScheduler = Bukkit.class.getMethod("getGlobalRegionScheduler").invoke(null);
-            if (globalRegionScheduler == null) return false;
+    private static Task chainGlobalDelayed(Plugin plugin, Runnable runnable, long initialDelayTicks, long periodTicks) {
+        if (plugin == null || runnable == null) return null;
+        if (!isFolia() && !NMSAdapterFactory.isFolia()) return null;
 
-            // GlobalRegionScheduler#run(Plugin, Consumer<ScheduledTask>)
-            java.lang.reflect.Method run = globalRegionScheduler.getClass().getMethod(
-                "run",
-                Plugin.class,
-                Consumer.class
-            );
-            Consumer<Object> consumer = ignoredTask -> runnable.run();
-            run.invoke(globalRegionScheduler, plugin, consumer);
-            return true;
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    private static boolean tryRunGlobalDelayed(Plugin plugin, Runnable runnable, long delayTicks) {
-        try {
-            Object globalRegionScheduler = Bukkit.class.getMethod("getGlobalRegionScheduler").invoke(null);
-            if (globalRegionScheduler == null) return false;
-
-            // GlobalRegionScheduler#runDelayed(Plugin, Consumer<ScheduledTask>, long)
-            java.lang.reflect.Method runDelayed = globalRegionScheduler.getClass().getMethod(
-                "runDelayed",
-                Plugin.class,
-                Consumer.class,
-                long.class
-            );
-            Consumer<Object> consumer = ignoredTask -> runnable.run();
-            runDelayed.invoke(globalRegionScheduler, plugin, consumer, delayTicks);
-            return true;
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    private static Object invokeGlobalRunDelayed(Plugin plugin, Consumer<Object> consumer, long delayTicks) {
-        try {
-            Object globalRegionScheduler = Bukkit.class.getMethod("getGlobalRegionScheduler").invoke(null);
-            if (globalRegionScheduler == null) return null;
-
-            // GlobalRegionScheduler#runDelayed(Plugin, Consumer<ScheduledTask>, long)
-            java.lang.reflect.Method runDelayed = globalRegionScheduler.getClass().getMethod(
-                "runDelayed",
-                Plugin.class,
-                Consumer.class,
-                long.class
-            );
-            return runDelayed.invoke(globalRegionScheduler, plugin, consumer, delayTicks);
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
-    private static Object tryRunGlobalAtFixedRate(Plugin plugin, Runnable runnable, long initialDelayTicks, long periodTicks) {
-        try {
-            Object globalRegionScheduler = Bukkit.class.getMethod("getGlobalRegionScheduler").invoke(null);
-            if (globalRegionScheduler == null) return null;
-
-            // GlobalRegionScheduler#runAtFixedRate(Plugin, Consumer<ScheduledTask>, long, long)
-            java.lang.reflect.Method runAtFixedRate = globalRegionScheduler.getClass().getMethod(
-                "runAtFixedRate",
-                Plugin.class,
-                Consumer.class,
-                long.class,
-                long.class
-            );
-            Consumer<Object> consumer = ignoredTask -> runnable.run();
-            return runAtFixedRate.invoke(globalRegionScheduler, plugin, consumer, initialDelayTicks, periodTicks);
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
-    private static Object tryRunGlobalChainedRepeating(Plugin plugin, Runnable runnable, long initialDelayTicks, long periodTicks) {
-        try {
-            // If we can't even get the global scheduler, bail quickly.
-            Bukkit.class.getMethod("getGlobalRegionScheduler");
-        } catch (Throwable ignored) {
-            return null;
-        }
-
-        final ChainedRepeatingHandle handle = new ChainedRepeatingHandle();
-
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        final Object[] current = new Object[] {null};
         final Consumer<Object>[] runner = new Consumer[1];
         runner[0] = ignoredTask -> {
-            if (handle.cancelled) return;
+            if (cancelled.get()) return;
             try {
                 runnable.run();
-            } catch (Throwable ignored) {
-                // Keep repeating even if the task body throws; caller can cancel if desired.
+            } catch (Throwable ignored2) {
             }
-            if (handle.cancelled) return;
-            Object next = invokeGlobalRunDelayed(plugin, runner[0], periodTicks);
-            handle.lastScheduledTask = next;
+            if (cancelled.get()) return;
+            try {
+                // Cast to raw Consumer to avoid hard-referencing Paper types here.
+                current[0] = Bukkit.getGlobalRegionScheduler().runDelayed(plugin, (Consumer) runner[0], periodTicks);
+            } catch (Throwable ignored2) {
+                cancelled.set(true);
+            }
         };
 
-        Object first = invokeGlobalRunDelayed(plugin, runner[0], initialDelayTicks);
-        handle.lastScheduledTask = first;
-        return first != null ? handle : null;
-    }
-
-    private static boolean tryRunAsyncNow(Plugin plugin, Runnable runnable) {
         try {
-            Object asyncScheduler = Bukkit.class.getMethod("getAsyncScheduler").invoke(null);
-            if (asyncScheduler == null) return false;
-
-            // AsyncScheduler#runNow(Plugin, Consumer<ScheduledTask>)
-            java.lang.reflect.Method runNow = asyncScheduler.getClass().getMethod(
-                "runNow",
-                Plugin.class,
-                Consumer.class
-            );
-            Consumer<Object> consumer = ignoredTask -> runnable.run();
-            runNow.invoke(asyncScheduler, plugin, consumer);
-            return true;
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    private static boolean tryRunEntity(Plugin plugin, Entity entity, Runnable runnable) {
-        try {
-            // Entity#getScheduler()
-            Object entityScheduler = entity.getClass().getMethod("getScheduler").invoke(entity);
-            if (entityScheduler == null) return false;
-
-            Consumer<Object> consumer = ignoredTask -> runnable.run();
-
-            // EntityScheduler#run(Plugin, Consumer<ScheduledTask>, Runnable retired)
-            try {
-                java.lang.reflect.Method run = entityScheduler.getClass().getMethod(
-                    "run",
-                    Plugin.class,
-                    Consumer.class,
-                    Runnable.class
-                );
-                run.invoke(entityScheduler, plugin, consumer, (Runnable) () -> {
-                });
-                return true;
-            } catch (NoSuchMethodException ignored) {
-                // Older/alternate signature: EntityScheduler#run(Plugin, Consumer<ScheduledTask>)
-                java.lang.reflect.Method run = entityScheduler.getClass().getMethod(
-                    "run",
-                    Plugin.class,
-                    Consumer.class
-                );
-                run.invoke(entityScheduler, plugin, consumer);
-                return true;
-            }
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    private static boolean tryRunEntityDelayed(Plugin plugin, Entity entity, Runnable runnable, long delayTicks) {
-        try {
-            Object entityScheduler = entity.getClass().getMethod("getScheduler").invoke(entity);
-            if (entityScheduler == null) return false;
-
-            Consumer<Object> consumer = ignoredTask -> runnable.run();
-
-            // Preferred signature: EntityScheduler#runDelayed(Plugin, Consumer<ScheduledTask>, Runnable retired, long delay)
-            try {
-                java.lang.reflect.Method m = entityScheduler.getClass().getMethod(
-                    "runDelayed",
-                    Plugin.class,
-                    Consumer.class,
-                    Runnable.class,
-                    long.class
-                );
-                m.invoke(entityScheduler, plugin, consumer, (Runnable) () -> {
-                }, delayTicks);
-                return true;
-            } catch (NoSuchMethodException ignored) {
-                // Alternate signature: EntityScheduler#runDelayed(Plugin, Consumer<ScheduledTask>, long delay)
-                java.lang.reflect.Method m = entityScheduler.getClass().getMethod(
-                    "runDelayed",
-                    Plugin.class,
-                    Consumer.class,
-                    long.class
-                );
-                m.invoke(entityScheduler, plugin, consumer, delayTicks);
-                return true;
-            }
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    private static Object invokeEntityRunDelayed(Plugin plugin, Entity entity, Consumer<Object> consumer, long delayTicks) {
-        try {
-            Object entityScheduler = entity.getClass().getMethod("getScheduler").invoke(entity);
-            if (entityScheduler == null) return null;
-
-            // Preferred signature: EntityScheduler#runDelayed(Plugin, Consumer<ScheduledTask>, Runnable retired, long delay)
-            try {
-                java.lang.reflect.Method m = entityScheduler.getClass().getMethod(
-                    "runDelayed",
-                    Plugin.class,
-                    Consumer.class,
-                    Runnable.class,
-                    long.class
-                );
-                return m.invoke(entityScheduler, plugin, consumer, (Runnable) () -> {
-                }, delayTicks);
-            } catch (NoSuchMethodException ignored) {
-                // Alternate signature: EntityScheduler#runDelayed(Plugin, Consumer<ScheduledTask>, long delay)
-                java.lang.reflect.Method m = entityScheduler.getClass().getMethod(
-                    "runDelayed",
-                    Plugin.class,
-                    Consumer.class,
-                    long.class
-                );
-                return m.invoke(entityScheduler, plugin, consumer, delayTicks);
-            }
+            current[0] = Bukkit.getGlobalRegionScheduler().runDelayed(plugin, (Consumer) runner[0], initialDelayTicks);
         } catch (Throwable ignored) {
             return null;
         }
-    }
 
-    private static Object tryRunEntityAtFixedRate(Plugin plugin,
-                                                 Entity entity,
-                                                 Runnable runnable,
-                                                 long initialDelayTicks,
-                                                 long periodTicks) {
-        try {
-            Object entityScheduler = entity.getClass().getMethod("getScheduler").invoke(entity);
-            if (entityScheduler == null) return null;
-
-            Consumer<Object> consumer = ignoredTask -> runnable.run();
-
-            // Preferred signature: EntityScheduler#runAtFixedRate(Plugin, Consumer<ScheduledTask>, Runnable retired, long, long)
-            try {
-                java.lang.reflect.Method m = entityScheduler.getClass().getMethod(
-                    "runAtFixedRate",
-                    Plugin.class,
-                    Consumer.class,
-                    Runnable.class,
-                    long.class,
-                    long.class
-                );
-                return m.invoke(entityScheduler, plugin, consumer, (Runnable) () -> {
-                }, initialDelayTicks, periodTicks);
-            } catch (NoSuchMethodException ignored) {
-                // Alternate signature: EntityScheduler#runAtFixedRate(Plugin, Consumer<ScheduledTask>, long, long)
-                java.lang.reflect.Method m = entityScheduler.getClass().getMethod(
-                    "runAtFixedRate",
-                    Plugin.class,
-                    Consumer.class,
-                    long.class,
-                    long.class
-                );
-                return m.invoke(entityScheduler, plugin, consumer, initialDelayTicks, periodTicks);
+        return new Task(current[0]) {
+            @Override
+            public void cancel() {
+                cancelled.set(true);
+                FineMapsScheduler.cancel(current[0]);
             }
-        } catch (Throwable ignored) {
-            return null;
-        }
+        };
     }
 
-    private static Object tryRunEntityChainedRepeating(Plugin plugin, Entity entity, Runnable runnable, long initialDelayTicks, long periodTicks) {
-        if (entity == null) return null;
-        final ChainedRepeatingHandle handle = new ChainedRepeatingHandle();
+    private static Task chainEntityDelayed(Plugin plugin, Entity entity, Runnable runnable, long initialDelayTicks, long periodTicks) {
+        if (plugin == null || entity == null || runnable == null) return null;
+        if (!isFolia() && !NMSAdapterFactory.isFolia()) return null;
 
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        final Object[] current = new Object[] {null};
         final Consumer<Object>[] runner = new Consumer[1];
         runner[0] = ignoredTask -> {
-            if (handle.cancelled) return;
+            if (cancelled.get()) return;
             try {
-                // If entity is no longer valid, stop rescheduling.
                 if (entity.isDead() || !entity.isValid()) {
-                    handle.cancelled = true;
+                    cancelled.set(true);
                     return;
                 }
-            } catch (Throwable ignored) {
+            } catch (Throwable ignored2) {
             }
-
             try {
                 runnable.run();
-            } catch (Throwable ignored) {
+            } catch (Throwable ignored2) {
             }
-
-            if (handle.cancelled) return;
-            Object next = invokeEntityRunDelayed(plugin, entity, runner[0], periodTicks);
-            handle.lastScheduledTask = next;
-            if (next == null) {
-                // Can't schedule next tick; stop.
-                handle.cancelled = true;
+            if (cancelled.get()) return;
+            try {
+                current[0] = entity.getScheduler().runDelayed(plugin, (Consumer) runner[0], () -> {
+                }, periodTicks);
+            } catch (Throwable ignored2) {
+                cancelled.set(true);
             }
         };
 
-        Object first = invokeEntityRunDelayed(plugin, entity, runner[0], initialDelayTicks);
-        handle.lastScheduledTask = first;
-        return first != null ? handle : null;
+        try {
+            current[0] = entity.getScheduler().runDelayed(plugin, (Consumer) runner[0], () -> {
+            }, initialDelayTicks);
+        } catch (Throwable ignored) {
+            return null;
+        }
+
+        return new Task(current[0]) {
+            @Override
+            public void cancel() {
+                cancelled.set(true);
+                FineMapsScheduler.cancel(current[0]);
+            }
+        };
     }
 }
 

@@ -908,7 +908,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
         // Repeatedly trigger map sending until render happens (or timeout).
         final long[] ticks = new long[] {0L};
-        final AtomicReference<Object> taskRef = new AtomicReference<>(null);
+        final AtomicReference<FineMapsScheduler.Task> taskRef = new AtomicReference<>(null);
 
         Runnable cleanup = () -> {
             try {
@@ -920,13 +920,15 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         Runnable tick = () -> {
             if (future.isDone()) {
                 cleanup.run();
-                FineMapsScheduler.cancel(taskRef.getAndSet(null));
+                FineMapsScheduler.Task t = taskRef.getAndSet(null);
+                if (t != null) t.cancel();
                 return;
             }
             if (ticks[0]++ >= timeoutTicks) {
                 future.completeExceptionally(new RuntimeException("Timed out waiting for map render"));
                 cleanup.run();
-                FineMapsScheduler.cancel(taskRef.getAndSet(null));
+                FineMapsScheduler.Task t = taskRef.getAndSet(null);
+                if (t != null) t.cancel();
                 return;
             }
             try {
@@ -938,7 +940,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             }
         };
 
-        Object handle = FineMapsScheduler.runForEntityRepeating(plugin, player, tick, 0L, 1L);
+        FineMapsScheduler.Task handle = FineMapsScheduler.runForEntityRepeating(plugin, player, tick, 0L, 1L);
         if (handle == null) {
             handle = FineMapsScheduler.runSyncRepeating(plugin, tick, 0L, 1L);
         }

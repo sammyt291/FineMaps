@@ -74,7 +74,7 @@ public class MultiBlockMapHandler {
     private final Map<Long, PlacementMode> instanceToMode = new ConcurrentHashMap<>();
     
     // Track preview tasks per player
-    private final Map<UUID, Object> playerPreviewTasks = new ConcurrentHashMap<>();
+    private final Map<UUID, FineMapsScheduler.Task> playerPreviewTasks = new ConcurrentHashMap<>();
     
     // Track preview display entity per player (for block display previews)
     private final Map<UUID, Integer> playerPreviewDisplay = new ConcurrentHashMap<>();
@@ -199,7 +199,7 @@ public class MultiBlockMapHandler {
         UUID playerId = player.getUniqueId();
 
         // If already running, don't restart (important: this can be called by pickup/inventory events).
-        Object existingTask = playerPreviewTasks.get(playerId);
+        FineMapsScheduler.Task existingTask = playerPreviewTasks.get(playerId);
         if (existingTask != null) {
             playersWithPreview.add(playerId);
             return;
@@ -207,7 +207,7 @@ public class MultiBlockMapHandler {
 
         playersWithPreview.add(playerId);
         
-        Object task = FineMapsScheduler.runForEntityRepeating(plugin, player, () -> {
+        FineMapsScheduler.Task task = FineMapsScheduler.runForEntityRepeating(plugin, player, () -> {
             Player p = plugin.getServer().getPlayer(playerId);
             if (p == null || !p.isOnline()) {
                 stopPreviewTask(p != null ? p : player);
@@ -231,7 +231,14 @@ public class MultiBlockMapHandler {
             int height = groupId > 0 ? mapManager.getMultiBlockHeight(held) : 1;
             showPlacementPreview(p, held, width, height);
         }, 0L, 4L); // Update every 4 ticks (0.2s)
-        
+
+        // Some schedulers (especially on Folia builds with differing APIs) may fail to schedule and return null.
+        // ConcurrentHashMap does not allow null values, so treat this as "preview unavailable" and bail quietly.
+        if (task == null) {
+            playersWithPreview.remove(playerId);
+            return;
+        }
+
         playerPreviewTasks.put(playerId, task);
     }
     
@@ -247,9 +254,9 @@ public class MultiBlockMapHandler {
         playersWithPreview.remove(playerId);
         
         // Cancel the task
-        Object task = playerPreviewTasks.remove(playerId);
+        FineMapsScheduler.Task task = playerPreviewTasks.remove(playerId);
         if (task != null) {
-            FineMapsScheduler.cancel(task);
+            task.cancel();
         }
         
         clearPreview(player);
