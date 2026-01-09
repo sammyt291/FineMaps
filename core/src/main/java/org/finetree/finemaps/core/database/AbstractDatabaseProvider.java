@@ -102,8 +102,6 @@ public abstract class AbstractDatabaseProvider implements DatabaseProvider {
                     // Initialize ID counters if not present
                     initializeIdCounters(conn);
                 }
-
-                logger.info("Database initialized successfully");
             } catch (SQLException e) {
                 logger.log(Level.SEVERE, "Failed to initialize database", e);
                 throw new RuntimeException("Database initialization failed", e);

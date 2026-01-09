@@ -1936,10 +1936,10 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                 return Collections.singletonList("<url>");
             }
             if (sub.equals("import") || sub.equals("importvanilla")) {
-                return Arrays.asList("<mapId>", "<name>");
+                return Collections.emptyList();
             }
             if (sub.equals("convert")) {
-                return Arrays.asList("<mapId>", "<name>");
+                return Collections.emptyList();
             }
             if (sub.equals("importall") || sub.equals("importvanillaall")) {
                 // Suggest world names
@@ -1974,11 +1974,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length >= 3 && (args[0].equalsIgnoreCase("url") || args[0].equalsIgnoreCase("fromurl"))) {
-            if (args.length == 3) return Collections.singletonList("<name>");
-            if (args.length == 4) return Collections.singletonList("<w>");
-            if (args.length == 5) return Collections.singletonList("<h>");
             if (args.length == 6) return Arrays.asList("raster", "nearest");
-            if (args.length == 7) return Collections.singletonList("<fps>");
         }
 
         if (args.length >= 3 && args[0].equalsIgnoreCase("config")) {
@@ -1995,7 +1991,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
     private List<String> getCachedArtNames() {
         List<ArtSummary> arts = mapManager.getCachedArtSummaries("finemaps");
-        if (arts.isEmpty()) return Collections.singletonList("<name>");
+        if (arts.isEmpty()) return Collections.emptyList();
         return arts.stream().map(ArtSummary::getName).distinct().collect(Collectors.toList());
     }
 

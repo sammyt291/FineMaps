@@ -21,7 +21,6 @@ public final class NMSAdapterFactory {
      */
     public static NMSAdapter createAdapter(Logger logger) {
         String version = getServerVersion();
-        logger.info("Detected server version: " + version);
 
         // FineMaps requires Minecraft 1.21+ (Java 21 bytecode).
         int major = getMajorVersion();
@@ -33,18 +32,13 @@ public final class NMSAdapterFactory {
 
         // Check for Folia
         boolean isFolia = isFolia();
-        if (isFolia) {
-            logger.info("Folia detected - using Folia-compatible adapter");
-        }
 
         // Check if ProtocolLib is available
         if (isProtocolLibAvailable()) {
-            logger.info("ProtocolLib found - using ProtocolLib adapter for full functionality");
             return new ProtocolLibAdapter(logger, version, isFolia);
         }
         
         // Fall back to universal Bukkit adapter (basic mode, no version-specific code)
-        logger.info("ProtocolLib not found - using Bukkit adapter (basic mode)");
         return new BukkitNMSAdapter(logger);
     }
     
