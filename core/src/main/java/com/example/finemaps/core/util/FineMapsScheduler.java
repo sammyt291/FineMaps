@@ -66,15 +66,58 @@ public final class FineMapsScheduler {
     }
 
     /**
-     * Per user request: determine Folia via Bukkit version string.
+     * Determine whether we're running on Folia.
+     *
+     * <p>Do not rely solely on {@code Bukkit.getVersion()} string contents; some builds may omit
+     * the literal "Folia" even when Folia threading/schedulers are present. Use several signals:
+     * server name, version string (case-insensitive), presence of Folia classes, and presence of
+     * Folia scheduler accessors.</p>
      */
     public static boolean isFolia() {
+        // Fast path: server name
+        try {
+            String name = Bukkit.getName();
+            if (name != null && name.equalsIgnoreCase("Folia")) return true;
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (Bukkit.getServer() != null) {
+                String name = Bukkit.getServer().getName();
+                if (name != null && name.equalsIgnoreCase("Folia")) return true;
+            }
+        } catch (Throwable ignored) {
+        }
+
+        // Version string (case-insensitive)
         try {
             String v = Bukkit.getVersion();
-            return v != null && v.contains("Folia");
+            if (v != null && v.toLowerCase().contains("folia")) return true;
         } catch (Throwable ignored) {
-            return false;
         }
+
+        // Presence of Folia classes
+        try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
+            return true;
+        } catch (ClassNotFoundException ignored) {
+        } catch (Throwable ignored) {
+        }
+        try {
+            Class.forName("io.papermc.paper.threadedregions.scheduler.GlobalRegionScheduler");
+            return true;
+        } catch (ClassNotFoundException ignored) {
+        } catch (Throwable ignored) {
+        }
+
+        // Presence of Folia scheduler accessors on Bukkit
+        try {
+            Bukkit.class.getMethod("getGlobalRegionScheduler");
+            return true;
+        } catch (NoSuchMethodException ignored) {
+        } catch (Throwable ignored) {
+        }
+
+        return false;
     }
 
     public static void runSync(Plugin plugin, Runnable runnable) {
