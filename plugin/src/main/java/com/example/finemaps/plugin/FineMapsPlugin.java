@@ -27,6 +27,8 @@ import java.io.File;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 import net.milkbowl.vault.economy.Economy;
@@ -285,11 +287,77 @@ public class FineMapsPlugin extends JavaPlugin {
 
     private void startCleanupTask() {
         int interval = config.getMaps().getCleanupInterval();
-        Bukkit.getScheduler().runTaskTimerAsynchronously(this, () -> {
+        if (interval <= 0) {
+            return;
+        }
+
+        Runnable cleanup = () -> {
             if (mapManager != null) {
                 mapManager.cleanup();
             }
-        }, interval, interval);
+        };
+
+        // Folia does not support Bukkit's async repeating scheduler and will throw UOE.
+        // Use Folia's schedulers when available (via reflection to keep Spigot API compileOnly).
+        if (NMSAdapterFactory.isFolia() && scheduleFoliaRepeatingTask(interval, cleanup)) {
+            return;
+        }
+
+        Bukkit.getScheduler().runTaskTimerAsynchronously(this, cleanup, interval, interval);
+    }
+
+    /**
+     * Attempts to schedule a repeating task on Folia using the supported schedulers.
+     * Uses reflection to avoid a hard dependency on Paper/Folia APIs at compile time.
+     *
+     * @param intervalTicks interval in ticks
+     * @param runnable task body
+     * @return true if scheduled successfully
+     */
+    private boolean scheduleFoliaRepeatingTask(int intervalTicks, Runnable runnable) {
+        // Preferred: Global region scheduler (tick-based).
+        try {
+            Object globalRegionScheduler = Bukkit.class.getMethod("getGlobalRegionScheduler").invoke(null);
+            if (globalRegionScheduler != null) {
+                // GlobalRegionScheduler#runAtFixedRate(Plugin, Consumer<ScheduledTask>, long, long)
+                java.lang.reflect.Method m = globalRegionScheduler.getClass().getMethod(
+                    "runAtFixedRate",
+                    org.bukkit.plugin.Plugin.class,
+                    Consumer.class,
+                    long.class,
+                    long.class
+                );
+                Consumer<Object> consumer = ignoredTask -> runnable.run();
+                m.invoke(globalRegionScheduler, this, consumer, (long) intervalTicks, (long) intervalTicks);
+                return true;
+            }
+        } catch (Throwable ignored) {
+            // Fall through to async scheduler attempt.
+        }
+
+        // Fallback: Async scheduler (time-based). Convert ticks to milliseconds (best-effort).
+        try {
+            Object asyncScheduler = Bukkit.class.getMethod("getAsyncScheduler").invoke(null);
+            if (asyncScheduler != null) {
+                // AsyncScheduler#runAtFixedRate(Plugin, Consumer<ScheduledTask>, long, long, TimeUnit)
+                java.lang.reflect.Method m = asyncScheduler.getClass().getMethod(
+                    "runAtFixedRate",
+                    org.bukkit.plugin.Plugin.class,
+                    Consumer.class,
+                    long.class,
+                    long.class,
+                    TimeUnit.class
+                );
+                long periodMs = Math.max(1L, (long) intervalTicks * 50L);
+                Consumer<Object> consumer = ignoredTask -> runnable.run();
+                m.invoke(asyncScheduler, this, consumer, periodMs, periodMs, TimeUnit.MILLISECONDS);
+                return true;
+            }
+        } catch (Throwable t) {
+            getLogger().log(Level.WARNING, "Failed to schedule cleanup task using Folia schedulers", t);
+        }
+
+        return false;
     }
 
     /**
