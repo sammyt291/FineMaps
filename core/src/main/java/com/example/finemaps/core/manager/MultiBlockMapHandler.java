@@ -832,7 +832,8 @@ public class MultiBlockMapHandler {
     }
 
     /**
-     * Sends a toast-style notification (title/subtitle) instead of a chat message.
+     * Sends a toast notification (advancement-style popup) instead of a chat message.
+     * Uses the NMS adapter to send a fake advancement packet.
      * 
      * @param player The player to notify
      * @param message The message to display
@@ -840,26 +841,11 @@ public class MultiBlockMapHandler {
     private void sendPlacementToast(Player player, String message) {
         if (player == null || message == null) return;
         try {
-            // Use title API for toast-like notification
-            // Empty title, message as subtitle, with quick fade in/out
-            player.sendTitle(
-                "",  // Empty main title
-                ChatColor.GREEN + message,  // Subtitle with the message
-                5,   // Fade in (ticks) - 0.25 seconds
-                30,  // Stay (ticks) - 1.5 seconds
-                10   // Fade out (ticks) - 0.5 seconds
-            );
+            // Use NMS adapter to send advancement-style toast
+            mapManager.getNmsAdapter().sendToast(player, message, Material.FILLED_MAP);
         } catch (Throwable t) {
-            // Fallback to action bar if title fails
-            try {
-                player.spigot().sendMessage(
-                    net.md_5.bungee.api.ChatMessageType.ACTION_BAR,
-                    new net.md_5.bungee.api.chat.TextComponent(ChatColor.GREEN + message)
-                );
-            } catch (Throwable ignored) {
-                // Last resort: regular message
-                player.sendMessage(ChatColor.GREEN + message);
-            }
+            // Fallback to chat message if toast fails
+            player.sendMessage(ChatColor.GREEN + message);
         }
     }
 

@@ -476,4 +476,117 @@ public class ProtocolLibAdapter implements NMSAdapter {
             return null;
         }
     }
+
+    @Override
+    public void sendToast(Player player, String message, org.bukkit.Material icon) {
+        if (player == null || message == null) return;
+        
+        try {
+            // Use ProtocolLib to send advancement toast packets
+            // This involves sending an ADVANCEMENTS packet with a fake advancement that has show_toast=true
+            
+            String uniqueId = "finemaps:toast_" + System.currentTimeMillis() + "_" + player.getUniqueId().hashCode();
+            
+            // Create the advancement packet
+            PacketContainer addPacket = protocolManager.createPacket(PacketType.Play.Server.ADVANCEMENTS);
+            
+            // Build advancement data using reflection since the packet structure is complex
+            sendToastViaReflection(player, message, icon, uniqueId);
+            
+        } catch (Throwable t) {
+            // Fallback to title-based toast
+            try {
+                player.sendTitle("", net.md_5.bungee.api.ChatColor.GREEN + message, 5, 40, 10);
+            } catch (Throwable t2) {
+                player.sendMessage(net.md_5.bungee.api.ChatColor.GREEN + message);
+            }
+        }
+    }
+
+    private void sendToastViaReflection(Player player, String message, org.bukkit.Material icon, String advancementId) {
+        try {
+            // Get NMS classes
+            Object nmsPlayer = player.getClass().getMethod("getHandle").invoke(player);
+            Object connection = nmsPlayer.getClass().getField("connection").get(nmsPlayer);
+            
+            // Get the send method
+            Method sendMethod = null;
+            for (Method m : connection.getClass().getMethods()) {
+                if (m.getName().equals("send") && m.getParameterCount() == 1) {
+                    sendMethod = m;
+                    break;
+                }
+            }
+            if (sendMethod == null) throw new NoSuchMethodException("send");
+            
+            // Build the advancement holder and progress maps using NMS
+            // This is version-specific, so we use a simpler approach via Bukkit's unsafe advancement loading
+            
+            // Use Bukkit's UnsafeValues to create a temporary advancement
+            org.bukkit.UnsafeValues unsafe = Bukkit.getUnsafe();
+            
+            // Build advancement JSON
+            String iconMaterial = icon != null ? icon.getKey().toString() : "minecraft:filled_map";
+            String json = "{" +
+                "\"display\":{" +
+                    "\"icon\":{\"id\":\"" + iconMaterial + "\"}," +
+                    "\"title\":{\"text\":\"" + escapeJson(message) + "\"}," +
+                    "\"description\":{\"text\":\"\"}," +
+                    "\"frame\":\"task\"," +
+                    "\"show_toast\":true," +
+                    "\"announce_to_chat\":false," +
+                    "\"hidden\":true" +
+                "}," +
+                "\"criteria\":{\"trigger\":{\"trigger\":\"minecraft:impossible\"}}" +
+            "}";
+            
+            // Parse advancement key
+            org.bukkit.NamespacedKey key = new org.bukkit.NamespacedKey("finemaps", "toast_" + System.nanoTime());
+            
+            // Load the advancement
+            org.bukkit.advancement.Advancement advancement = unsafe.loadAdvancement(key, json);
+            
+            if (advancement != null) {
+                // Grant and immediately revoke to show toast
+                org.bukkit.advancement.AdvancementProgress progress = player.getAdvancementProgress(advancement);
+                for (String criteria : progress.getRemainingCriteria()) {
+                    progress.awardCriteria(criteria);
+                }
+                
+                // Schedule removal of the advancement after a tick
+                Bukkit.getScheduler().runTaskLater(
+                    Bukkit.getPluginManager().getPlugins()[0], // Get any plugin
+                    () -> {
+                        try {
+                            // Revoke criteria
+                            org.bukkit.advancement.AdvancementProgress p = player.getAdvancementProgress(advancement);
+                            for (String c : p.getAwardedCriteria()) {
+                                p.revokeCriteria(c);
+                            }
+                            // Remove the advancement
+                            unsafe.removeAdvancement(key);
+                        } catch (Throwable ignored) {
+                        }
+                    },
+                    1L
+                );
+            }
+        } catch (Throwable t) {
+            logger.log(Level.FINE, "Toast via reflection failed, using title fallback", t);
+            try {
+                player.sendTitle("", net.md_5.bungee.api.ChatColor.GREEN + message, 5, 40, 10);
+            } catch (Throwable t2) {
+                player.sendMessage(net.md_5.bungee.api.ChatColor.GREEN + message);
+            }
+        }
+    }
+
+    private String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
+    }
 }

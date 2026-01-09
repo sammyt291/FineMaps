@@ -159,6 +159,15 @@ public interface NMSAdapter {
     int getMinorVersion();
 
     /**
+     * Sends a toast notification (advancement-style popup) to a player.
+     *
+     * @param player The player to send the toast to
+     * @param message The message to display
+     * @param icon The material to use as icon (e.g., Material.FILLED_MAP)
+     */
+    void sendToast(Player player, String message, org.bukkit.Material icon);
+
+    /**
      * Interface for handling intercepted map packets.
      */
     interface MapPacketListener {
