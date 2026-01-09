@@ -139,8 +139,10 @@ public final class FineMapsScheduler {
         if (delayTicks < 0) delayTicks = 0;
 
         if (isFolia()) {
+            // Folia's GlobalRegionScheduler.runDelayed requires delay >= 1
+            long foliaDelay = Math.max(1, delayTicks);
             try {
-                Bukkit.getGlobalRegionScheduler().runDelayed(plugin, ignored -> runnable.run(), delayTicks);
+                Bukkit.getGlobalRegionScheduler().runDelayed(plugin, ignored -> runnable.run(), foliaDelay);
                 return;
             } catch (Throwable ignored) {
                 // fall through
@@ -183,9 +185,11 @@ public final class FineMapsScheduler {
         if (delayTicks < 0) delayTicks = 0;
 
         if (isFolia() && entity != null) {
+            // Folia's EntityScheduler.runDelayed requires delayTicks >= 1
+            long foliaDelay = Math.max(1, delayTicks);
             try {
                 entity.getScheduler().runDelayed(plugin, ignored -> runnable.run(), () -> {
-                }, delayTicks);
+                }, foliaDelay);
                 return;
             } catch (Throwable ignored) {
                 // fall through
@@ -203,13 +207,15 @@ public final class FineMapsScheduler {
         if (periodTicks < 1) periodTicks = 1;
 
         if (isFolia()) {
+            // Folia's GlobalRegionScheduler.runAtFixedRate requires initialDelayTicks >= 1
+            long foliaInitialDelay = Math.max(1, initialDelayTicks);
             try {
                 Object folia = Bukkit.getGlobalRegionScheduler()
-                    .runAtFixedRate(plugin, ignored -> runnable.run(), initialDelayTicks, periodTicks);
+                    .runAtFixedRate(plugin, ignored -> runnable.run(), foliaInitialDelay, periodTicks);
                 return new Task(folia);
             } catch (Throwable ignored) {
                 // Fallback: chain runDelayed (more robust across scheduler API drift)
-                Task chained = chainGlobalDelayed(plugin, runnable, initialDelayTicks, periodTicks);
+                Task chained = chainGlobalDelayed(plugin, runnable, foliaInitialDelay, periodTicks);
                 if (chained != null) return chained;
                 return null;
             }
@@ -231,13 +237,15 @@ public final class FineMapsScheduler {
         if (periodTicks < 1) periodTicks = 1;
 
         if (isFolia() && entity != null) {
+            // Folia's EntityScheduler.runAtFixedRate requires initialDelayTicks >= 1
+            long foliaInitialDelay = Math.max(1, initialDelayTicks);
             try {
                 Object folia = entity.getScheduler()
                     .runAtFixedRate(plugin, ignored -> runnable.run(), () -> {
-                    }, initialDelayTicks, periodTicks);
+                    }, foliaInitialDelay, periodTicks);
                 return new Task(folia);
             } catch (Throwable ignored) {
-                Task chained = chainEntityDelayed(plugin, entity, runnable, initialDelayTicks, periodTicks);
+                Task chained = chainEntityDelayed(plugin, entity, runnable, foliaInitialDelay, periodTicks);
                 if (chained != null) return chained;
                 return null;
             }
@@ -284,6 +292,10 @@ public final class FineMapsScheduler {
         if (plugin == null || runnable == null) return null;
         if (!isFolia() && !NMSAdapterFactory.isFolia()) return null;
 
+        // Folia's GlobalRegionScheduler.runDelayed requires delay >= 1
+        final long foliaInitialDelay = Math.max(1, initialDelayTicks);
+        final long foliaPeriod = Math.max(1, periodTicks);
+
         AtomicBoolean cancelled = new AtomicBoolean(false);
         final Object[] current = new Object[] {null};
         final Consumer<Object>[] runner = new Consumer[1];
@@ -296,14 +308,14 @@ public final class FineMapsScheduler {
             if (cancelled.get()) return;
             try {
                 // Cast to raw Consumer to avoid hard-referencing Paper types here.
-                current[0] = Bukkit.getGlobalRegionScheduler().runDelayed(plugin, (Consumer) runner[0], periodTicks);
+                current[0] = Bukkit.getGlobalRegionScheduler().runDelayed(plugin, (Consumer) runner[0], foliaPeriod);
             } catch (Throwable ignored2) {
                 cancelled.set(true);
             }
         };
 
         try {
-            current[0] = Bukkit.getGlobalRegionScheduler().runDelayed(plugin, (Consumer) runner[0], initialDelayTicks);
+            current[0] = Bukkit.getGlobalRegionScheduler().runDelayed(plugin, (Consumer) runner[0], foliaInitialDelay);
         } catch (Throwable ignored) {
             return null;
         }
@@ -320,6 +332,10 @@ public final class FineMapsScheduler {
     private static Task chainEntityDelayed(Plugin plugin, Entity entity, Runnable runnable, long initialDelayTicks, long periodTicks) {
         if (plugin == null || entity == null || runnable == null) return null;
         if (!isFolia() && !NMSAdapterFactory.isFolia()) return null;
+
+        // Folia's EntityScheduler.runDelayed requires delay >= 1
+        final long foliaInitialDelay = Math.max(1, initialDelayTicks);
+        final long foliaPeriod = Math.max(1, periodTicks);
 
         AtomicBoolean cancelled = new AtomicBoolean(false);
         final Object[] current = new Object[] {null};
@@ -340,7 +356,7 @@ public final class FineMapsScheduler {
             if (cancelled.get()) return;
             try {
                 current[0] = entity.getScheduler().runDelayed(plugin, (Consumer) runner[0], () -> {
-                }, periodTicks);
+                }, foliaPeriod);
             } catch (Throwable ignored2) {
                 cancelled.set(true);
             }
@@ -348,7 +364,7 @@ public final class FineMapsScheduler {
 
         try {
             current[0] = entity.getScheduler().runDelayed(plugin, (Consumer) runner[0], () -> {
-            }, initialDelayTicks);
+            }, foliaInitialDelay);
         } catch (Throwable ignored) {
             return null;
         }

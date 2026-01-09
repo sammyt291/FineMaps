@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -49,6 +50,10 @@ public class BukkitNMSAdapter implements NMSAdapter {
     private final AtomicInteger nextDisplayId = new AtomicInteger(Integer.MAX_VALUE - 1000000);
     private final AtomicInteger nextPreviewDisplayId = new AtomicInteger(Integer.MAX_VALUE - 2000000);
     private volatile boolean warnedFoliaPreviewFailure = false;
+    
+    // Track the latest expected preview display per spawn to handle race conditions
+    private final Map<Integer, Long> previewSpawnGeneration = new ConcurrentHashMap<>();
+    private final AtomicLong generationCounter = new AtomicLong(0);
     
     // Block display class for preview
     private Class<?> blockDisplayClass;
@@ -86,6 +91,8 @@ public class BukkitNMSAdapter implements NMSAdapter {
         logger.info("  - FilledMap material: " + filledMapMaterial.name());
         logger.info("  - MapMeta support: " + hasMapMeta);
         logger.info("  - ItemDisplay support: " + hasItemDisplay);
+        logger.info("  - BlockDisplay support: " + (blockDisplayClass != null));
+        logger.info("  - Folia detected: " + isFolia);
     }
 
     private int[] parseVersion() {
@@ -477,6 +484,7 @@ public class BukkitNMSAdapter implements NMSAdapter {
     @SuppressWarnings("unchecked")
     public int spawnPreviewBlockDisplay(Location location, boolean valid, float scaleX, float scaleY, float scaleZ) {
         if (blockDisplayClass == null) {
+            logger.fine("BlockDisplay class not available, cannot spawn preview");
             return -1;
         }
         
@@ -487,11 +495,14 @@ public class BukkitNMSAdapter implements NMSAdapter {
             // On Folia, this must run on the region thread that owns the target location.
             if (isFolia) {
                 int displayId = nextPreviewDisplayId.getAndIncrement();
+                long generation = generationCounter.incrementAndGet();
                 pendingPreviewDisplayIds.add(displayId);
+                previewSpawnGeneration.put(displayId, generation);
 
                 Plugin plugin = getOwningPlugin();
                 if (plugin == null) {
                     pendingPreviewDisplayIds.remove(displayId);
+                    previewSpawnGeneration.remove(displayId);
                     return -1;
                 }
 
@@ -500,27 +511,47 @@ public class BukkitNMSAdapter implements NMSAdapter {
                 try {
                     Bukkit.getRegionScheduler().run(plugin, world, cx, cz, ignored -> {
                         try {
-                            Entity display = spawnBlockDisplayReflection(world, location, valid, scaleX, scaleY, scaleZ);
-                            if (display == null) {
+                            // Check if this spawn is still valid (not superseded by a newer one)
+                            Long expectedGen = previewSpawnGeneration.get(displayId);
+                            if (expectedGen == null || expectedGen != generation) {
+                                // This spawn was cancelled/superseded
                                 pendingPreviewDisplayIds.remove(displayId);
                                 return;
                             }
-                            if (!pendingPreviewDisplayIds.remove(displayId)) {
-                                // Cancelled before spawn completed
+                            
+                            Entity display = spawnBlockDisplayReflection(world, location, valid, scaleX, scaleY, scaleZ);
+                            if (display == null) {
+                                pendingPreviewDisplayIds.remove(displayId);
+                                previewSpawnGeneration.remove(displayId);
+                                logger.warning("Failed to spawn BlockDisplay entity on Folia (reflection returned null)");
+                                return;
+                            }
+                            
+                            // Double-check generation in case it was cancelled while spawning
+                            expectedGen = previewSpawnGeneration.get(displayId);
+                            if (expectedGen == null || expectedGen != generation) {
+                                // Cancelled while spawning
                                 try {
                                     display.remove();
                                 } catch (Throwable ignored2) {
                                 }
+                                pendingPreviewDisplayIds.remove(displayId);
                                 return;
                             }
-                            previewDisplayEntities.put(displayId, display);
-                        } catch (Throwable ignored2) {
+                            
                             pendingPreviewDisplayIds.remove(displayId);
+                            previewSpawnGeneration.remove(displayId);
+                            previewDisplayEntities.put(displayId, display);
+                        } catch (Throwable t) {
+                            pendingPreviewDisplayIds.remove(displayId);
+                            previewSpawnGeneration.remove(displayId);
+                            logger.log(Level.WARNING, "Error spawning BlockDisplay on Folia", t);
                         }
                     });
                     return displayId;
                 } catch (Throwable t) {
                     pendingPreviewDisplayIds.remove(displayId);
+                    previewSpawnGeneration.remove(displayId);
                     if (!warnedFoliaPreviewFailure) {
                         warnedFoliaPreviewFailure = true;
                         logger.log(Level.WARNING, "Folia rejected BlockDisplay spawn scheduling; placement preview may be missing", t);
@@ -535,9 +566,11 @@ public class BukkitNMSAdapter implements NMSAdapter {
                 int displayId = nextPreviewDisplayId.getAndIncrement();
                 previewDisplayEntities.put(displayId, display);
                 return displayId;
+            } else {
+                logger.warning("Failed to spawn BlockDisplay entity (reflection returned null)");
             }
         } catch (Exception e) {
-            logger.log(Level.FINE, "Failed to spawn preview block display", e);
+            logger.log(Level.WARNING, "Failed to spawn preview block display", e);
         }
         
         return -1;
@@ -545,10 +578,20 @@ public class BukkitNMSAdapter implements NMSAdapter {
 
     @SuppressWarnings("unchecked")
     private Entity spawnBlockDisplayReflection(World world, Location location, boolean valid, float scaleX, float scaleY, float scaleZ) {
+        if (blockDisplayClass == null) {
+            logger.warning("Cannot spawn BlockDisplay: blockDisplayClass is null");
+            return null;
+        }
+        
         try {
             // Spawn the BlockDisplay entity
             Method simpleSpawn = World.class.getMethod("spawn", Location.class, Class.class);
             Entity entity = (Entity) simpleSpawn.invoke(world, location, blockDisplayClass);
+            
+            if (entity == null) {
+                logger.warning("World.spawn returned null for BlockDisplay");
+                return null;
+            }
             
             // Get the block material for the color (lime/green concrete for valid, red concrete for invalid)
             Material blockMaterial;
@@ -580,7 +623,7 @@ public class BukkitNMSAdapter implements NMSAdapter {
                 Method setBlock = blockDisplayClass.getMethod("setBlock", org.bukkit.block.data.BlockData.class);
                 setBlock.invoke(entity, blockData);
             } catch (Exception e) {
-                logger.fine("Could not set block data on BlockDisplay: " + e.getMessage());
+                logger.warning("Could not set block data on BlockDisplay: " + e.getMessage());
             }
             
             // Try to set billboard to FIXED
@@ -590,7 +633,8 @@ public class BukkitNMSAdapter implements NMSAdapter {
                 Method setBillboard = displayClass.getMethod("setBillboard", billboardClass);
                 Object fixedBillboard = Enum.valueOf((Class<Enum>) billboardClass, "FIXED");
                 setBillboard.invoke(entity, fixedBillboard);
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                logger.fine("Could not set billboard on BlockDisplay: " + e.getMessage());
             }
             
             // Set transformation to make it smaller (outline-like appearance)
@@ -617,7 +661,7 @@ public class BukkitNMSAdapter implements NMSAdapter {
                 Method setTransformation = displayClass.getMethod("setTransformation", transformationClass);
                 setTransformation.invoke(entity, transformation);
             } catch (Exception e) {
-                logger.fine("Could not set transformation on BlockDisplay: " + e.getMessage());
+                logger.warning("Could not set transformation on BlockDisplay: " + e.getMessage());
             }
             
             // Set view range to be visible nearby
@@ -625,26 +669,32 @@ public class BukkitNMSAdapter implements NMSAdapter {
                 Class<?> displayClass = Class.forName("org.bukkit.entity.Display");
                 Method setViewRange = displayClass.getMethod("setViewRange", float.class);
                 setViewRange.invoke(entity, 32.0f);
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                logger.fine("Could not set view range on BlockDisplay: " + e.getMessage());
             }
             
             // Make it glow for better visibility
             try {
                 Method setGlowing = Entity.class.getMethod("setGlowing", boolean.class);
                 setGlowing.invoke(entity, true);
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                logger.fine("Could not set glowing on BlockDisplay: " + e.getMessage());
             }
             
             return entity;
         } catch (Exception e) {
-            logger.log(Level.FINE, "Could not spawn BlockDisplay via reflection: " + e.getMessage());
+            logger.log(Level.WARNING, "Could not spawn BlockDisplay via reflection", e);
             return null;
         }
     }
 
     @Override
     public void removePreviewDisplay(int entityId) {
+        // Invalidate any pending spawn by removing the generation entry
+        // This will cause the spawn callback to discard the entity
+        previewSpawnGeneration.remove(entityId);
         pendingPreviewDisplayIds.remove(entityId);
+        
         Entity display = previewDisplayEntities.remove(entityId);
         if (display == null) return;
 
