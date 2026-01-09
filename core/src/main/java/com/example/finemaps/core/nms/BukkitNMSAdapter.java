@@ -25,8 +25,8 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Universal Bukkit-based NMS adapter that works across all versions using reflection.
- * No version-specific modules needed - detects capabilities at runtime.
+ * Bukkit-based NMS adapter for Minecraft 1.21+.
+ * Used as fallback when ProtocolLib is not available.
  */
 public class BukkitNMSAdapter implements NMSAdapter {
 
@@ -36,8 +36,6 @@ public class BukkitNMSAdapter implements NMSAdapter {
     private final boolean isFolia;
     
     // Cached reflection lookups
-    private final Material filledMapMaterial;
-    private final boolean hasMapMeta;
     private final boolean hasItemDisplay;
     private final Particle dustParticle;
     private final Particle flameParticle;
@@ -59,9 +57,6 @@ public class BukkitNMSAdapter implements NMSAdapter {
     private Class<?> blockDisplayClass;
     
     // Reflection caches
-    private Method setMapIdMethod;
-    private Method getMapIdMethod;
-    private Method hasMapIdMethod;
     private Class<?> itemDisplayClass;
     private Object dustOptions;
 
@@ -71,25 +66,17 @@ public class BukkitNMSAdapter implements NMSAdapter {
         this.minorVersion = parseVersion()[1];
         this.isFolia = detectFolia();
         
-        // Detect material name
-        this.filledMapMaterial = detectFilledMapMaterial();
-        
-        // Detect MapMeta capabilities
-        this.hasMapMeta = detectMapMeta();
-        
-        // Detect display entities
+        // Detect display entities (always available on 1.21+)
         this.hasItemDisplay = detectItemDisplay();
         
         // Detect particles
         this.dustParticle = detectParticle("DUST", "REDSTONE");
         this.flameParticle = detectParticle("FLAME", "FLAME");
         
-        // Setup dust options for modern versions
+        // Setup dust options
         setupDustOptions();
         
-        logger.info("BukkitNMSAdapter initialized for " + majorVersion + "." + minorVersion);
-        logger.info("  - FilledMap material: " + filledMapMaterial.name());
-        logger.info("  - MapMeta support: " + hasMapMeta);
+        logger.info("BukkitNMSAdapter initialized for 1." + majorVersion + "." + minorVersion);
         logger.info("  - ItemDisplay support: " + hasItemDisplay);
         logger.info("  - BlockDisplay support: " + (blockDisplayClass != null));
         logger.info("  - Folia detected: " + isFolia);
@@ -97,15 +84,15 @@ public class BukkitNMSAdapter implements NMSAdapter {
 
     private int[] parseVersion() {
         String version = Bukkit.getBukkitVersion();
-        // Format: "1.21.1-R0.1-SNAPSHOT" or "1.20.4-R0.1-SNAPSHOT"
+        // Format: "1.21.1-R0.1-SNAPSHOT"
         try {
             String[] parts = version.split("[.\\-]");
-            int major = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
+            int major = parts.length > 1 ? Integer.parseInt(parts[1]) : 21;
             int minor = parts.length > 2 ? Integer.parseInt(parts[2]) : 0;
             return new int[]{major, minor};
         } catch (NumberFormatException e) {
-            logger.warning("Could not parse version: " + version + ", assuming 1.20.0");
-            return new int[]{20, 0};
+            logger.warning("Could not parse version: " + version + ", assuming 1.21.0");
+            return new int[]{21, 0};
         }
     }
 
@@ -114,27 +101,6 @@ public class BukkitNMSAdapter implements NMSAdapter {
             Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
             return true;
         } catch (ClassNotFoundException e) {
-            return false;
-        }
-    }
-
-    private Material detectFilledMapMaterial() {
-        // 1.13+ uses FILLED_MAP, 1.12 and below use MAP
-        try {
-            return Material.valueOf("FILLED_MAP");
-        } catch (IllegalArgumentException e) {
-            return Material.valueOf("MAP");
-        }
-    }
-
-    private boolean detectMapMeta() {
-        // Check if MapMeta.setMapId exists (1.13+)
-        try {
-            setMapIdMethod = MapMeta.class.getMethod("setMapId", int.class);
-            getMapIdMethod = MapMeta.class.getMethod("getMapId");
-            hasMapIdMethod = MapMeta.class.getMethod("hasMapId");
-            return true;
-        } catch (NoSuchMethodException e) {
             return false;
         }
     }
@@ -228,99 +194,43 @@ public class BukkitNMSAdapter implements NMSAdapter {
     }
 
     @Override
-    @SuppressWarnings("deprecation")
     public ItemStack createMapItem(int mapId) {
-        ItemStack item = new ItemStack(filledMapMaterial);
-        
-        if (hasMapMeta) {
-            // 1.13+ - use MapMeta
-            try {
-                MapMeta meta = (MapMeta) item.getItemMeta();
-                if (meta != null) {
-                    // Try direct method first (most versions)
-                    try {
-                        meta.setMapId(mapId);
-                    } catch (NoSuchMethodError e) {
-                        // Fall back to reflection
-                        setMapIdMethod.invoke(meta, mapId);
-                    }
-                    item.setItemMeta(meta);
-                }
-            } catch (Exception e) {
-                logger.log(Level.WARNING, "Failed to set map ID, trying alternative method", e);
-                // Try creating with map view
-                try {
-                    org.bukkit.map.MapView view = org.bukkit.Bukkit.getMap(mapId);
-                    if (view != null) {
-                        MapMeta meta = (MapMeta) item.getItemMeta();
-                        if (meta != null) {
-                            // Some versions use setMapView instead
-                            try {
-                                java.lang.reflect.Method setMapView = MapMeta.class.getMethod("setMapView", org.bukkit.map.MapView.class);
-                                setMapView.invoke(meta, view);
-                                item.setItemMeta(meta);
-                            } catch (NoSuchMethodException ignored) {
-                            }
-                        }
-                    }
-                } catch (Exception ignored) {
-                }
-            }
-        } else {
-            // 1.12 and below - use durability
-            item.setDurability((short) mapId);
+        ItemStack item = new ItemStack(Material.FILLED_MAP);
+        MapMeta meta = (MapMeta) item.getItemMeta();
+        if (meta != null) {
+            meta.setMapId(mapId);
+            item.setItemMeta(meta);
         }
-        
         return item;
     }
 
     @Override
     public int getMapId(ItemStack item) {
-        if (item == null || item.getType() != filledMapMaterial) {
+        if (item == null || item.getType() != Material.FILLED_MAP) {
             return -1;
         }
-        
-        if (hasMapMeta) {
-            ItemMeta meta = item.getItemMeta();
-            if (meta instanceof MapMeta) {
-                try {
-                    Boolean hasId = (Boolean) hasMapIdMethod.invoke(meta);
-                    if (hasId) {
-                        return (Integer) getMapIdMethod.invoke(meta);
-                    }
-                } catch (Exception e) {
-                    logger.log(Level.WARNING, "Failed to get map ID via reflection", e);
-                }
+        ItemMeta meta = item.getItemMeta();
+        if (meta instanceof MapMeta mapMeta) {
+            if (mapMeta.hasMapId()) {
+                return mapMeta.getMapId();
             }
-        } else {
-            // 1.12 and below
-            return item.getDurability();
         }
-        
         return -1;
     }
 
     @Override
     public ItemStack setMapId(ItemStack item, int mapId) {
-        if (hasMapMeta) {
-            MapMeta meta = (MapMeta) item.getItemMeta();
-            if (meta != null) {
-                try {
-                    setMapIdMethod.invoke(meta, mapId);
-                    item.setItemMeta(meta);
-                } catch (Exception e) {
-                    logger.log(Level.WARNING, "Failed to set map ID via reflection", e);
-                }
-            }
-        } else {
-            item.setDurability((short) mapId);
+        MapMeta meta = (MapMeta) item.getItemMeta();
+        if (meta != null) {
+            meta.setMapId(mapId);
+            item.setItemMeta(meta);
         }
         return item;
     }
 
     @Override
     public boolean isFilledMap(ItemStack item) {
-        return item != null && item.getType() == filledMapMaterial;
+        return item != null && item.getType() == Material.FILLED_MAP;
     }
 
     @Override

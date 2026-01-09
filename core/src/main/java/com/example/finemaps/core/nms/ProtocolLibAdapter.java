@@ -21,8 +21,8 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * ProtocolLib-based NMS adapter for cross-version compatibility.
- * Works with most Spigot/Paper/Folia versions from 1.12.2 to 1.21.x.
+ * ProtocolLib-based NMS adapter for Minecraft 1.21+.
+ * Works with Paper/Folia servers.
  */
 public class ProtocolLibAdapter implements NMSAdapter {
 
@@ -86,59 +86,23 @@ public class ProtocolLibAdapter implements NMSAdapter {
     @Override
     public void sendMapUpdate(Player player, int mapId, byte[] pixels) {
         try {
-            // Create map data packet
+            // Create map data packet (1.21+ packet structure)
             PacketContainer packet = protocolManager.createPacket(PacketType.Play.Server.MAP);
             
-            if (majorVersion >= 17) {
-                // 1.17+ packet structure
-                packet.getIntegers().write(0, mapId);
-                packet.getBytes().write(0, (byte) 0); // Scale
-                packet.getBooleans().write(0, false); // Locked
-                
-                if (majorVersion >= 17) {
-                    // Write map data
-                    packet.getIntegers().write(1, 0); // Start X
-                    packet.getIntegers().write(2, 0); // Start Y
-                    packet.getIntegers().write(3, 128); // Width
-                    packet.getIntegers().write(4, 128); // Height
-                    packet.getByteArrays().write(0, pixels);
-                }
-            } else {
-                // Legacy packet structure (1.12-1.16)
-                packet.getIntegers().write(0, mapId);
-                packet.getBytes().write(0, (byte) 0); // Scale
-                packet.getBooleans().write(0, false); // Tracking position
-                
-                // In older versions, we need to set the columns/rows
-                packet.getIntegers().write(1, 128); // Columns
-                packet.getIntegers().write(2, 128); // Rows
-                packet.getIntegers().write(3, 0); // Start X
-                packet.getIntegers().write(4, 0); // Start Y
-                packet.getByteArrays().write(0, pixels);
-            }
+            packet.getIntegers().write(0, mapId);
+            packet.getBytes().write(0, (byte) 0); // Scale
+            packet.getBooleans().write(0, false); // Locked
+            
+            // Write map data
+            packet.getIntegers().write(1, 0); // Start X
+            packet.getIntegers().write(2, 0); // Start Y
+            packet.getIntegers().write(3, 128); // Width
+            packet.getIntegers().write(4, 128); // Height
+            packet.getByteArrays().write(0, pixels);
             
             protocolManager.sendServerPacket(player, packet);
         } catch (Exception e) {
             logger.log(Level.WARNING, "Failed to send map update packet", e);
-            // Fall back to alternative method
-            sendMapUpdateFallback(player, mapId, pixels);
-        }
-    }
-
-    private void sendMapUpdateFallback(Player player, int mapId, byte[] pixels) {
-        try {
-            // Use Bukkit API as fallback
-            // This requires the map to exist in the world
-            // Less efficient but more compatible
-            
-            // For older versions, we may need reflection
-            Class<?> craftMapView = getCraftClass("map.CraftMapView");
-            Class<?> renderData = Class.forName("org.bukkit.map.MapView$RenderData");
-            
-            // This is a simplified fallback - full implementation would be more complex
-            logger.warning("Using fallback map update method - may have reduced functionality");
-        } catch (Exception e) {
-            logger.log(Level.SEVERE, "Fallback map update failed", e);
         }
     }
 
@@ -148,25 +112,14 @@ public class ProtocolLibAdapter implements NMSAdapter {
         try {
             PacketContainer packet = protocolManager.createPacket(PacketType.Play.Server.MAP);
             
-            if (majorVersion >= 17) {
-                packet.getIntegers().write(0, mapId);
-                packet.getBytes().write(0, (byte) 0);
-                packet.getBooleans().write(0, false);
-                packet.getIntegers().write(1, startX);
-                packet.getIntegers().write(2, startY);
-                packet.getIntegers().write(3, width);
-                packet.getIntegers().write(4, height);
-                packet.getByteArrays().write(0, pixels);
-            } else {
-                packet.getIntegers().write(0, mapId);
-                packet.getBytes().write(0, (byte) 0);
-                packet.getBooleans().write(0, false);
-                packet.getIntegers().write(1, width);
-                packet.getIntegers().write(2, height);
-                packet.getIntegers().write(3, startX);
-                packet.getIntegers().write(4, startY);
-                packet.getByteArrays().write(0, pixels);
-            }
+            packet.getIntegers().write(0, mapId);
+            packet.getBytes().write(0, (byte) 0);
+            packet.getBooleans().write(0, false);
+            packet.getIntegers().write(1, startX);
+            packet.getIntegers().write(2, startY);
+            packet.getIntegers().write(3, width);
+            packet.getIntegers().write(4, height);
+            packet.getByteArrays().write(0, pixels);
             
             protocolManager.sendServerPacket(player, packet);
         } catch (Exception e) {
@@ -176,72 +129,40 @@ public class ProtocolLibAdapter implements NMSAdapter {
 
     @Override
     public ItemStack createMapItem(int mapId) {
-        ItemStack item;
-        
-        if (majorVersion >= 13) {
-            // 1.13+ uses FILLED_MAP
-            item = new ItemStack(Material.FILLED_MAP);
-            MapMeta meta = (MapMeta) item.getItemMeta();
-            if (meta != null) {
-                meta.setMapId(mapId);
-                item.setItemMeta(meta);
-            }
-        } else {
-            // 1.12.x uses MAP with durability as ID
-            item = new ItemStack(Material.valueOf("MAP"), 1, (short) mapId);
+        ItemStack item = new ItemStack(Material.FILLED_MAP);
+        MapMeta meta = (MapMeta) item.getItemMeta();
+        if (meta != null) {
+            meta.setMapId(mapId);
+            item.setItemMeta(meta);
         }
-        
         return item;
     }
 
     @Override
     public int getMapId(ItemStack item) {
-        if (item == null) {
+        if (item == null || item.getType() != Material.FILLED_MAP) {
             return -1;
         }
-        
-        if (majorVersion >= 13) {
-            if (item.getType() != Material.FILLED_MAP) {
-                return -1;
-            }
-            MapMeta meta = (MapMeta) item.getItemMeta();
-            if (meta != null && meta.hasMapId()) {
-                return meta.getMapId();
-            }
-        } else {
-            if (item.getType().name().equals("MAP")) {
-                return item.getDurability();
-            }
+        MapMeta meta = (MapMeta) item.getItemMeta();
+        if (meta != null && meta.hasMapId()) {
+            return meta.getMapId();
         }
-        
         return -1;
     }
 
     @Override
     public ItemStack setMapId(ItemStack item, int mapId) {
-        if (majorVersion >= 13) {
-            MapMeta meta = (MapMeta) item.getItemMeta();
-            if (meta != null) {
-                meta.setMapId(mapId);
-                item.setItemMeta(meta);
-            }
-        } else {
-            item.setDurability((short) mapId);
+        MapMeta meta = (MapMeta) item.getItemMeta();
+        if (meta != null) {
+            meta.setMapId(mapId);
+            item.setItemMeta(meta);
         }
         return item;
     }
 
     @Override
     public boolean isFilledMap(ItemStack item) {
-        if (item == null) {
-            return false;
-        }
-        
-        if (majorVersion >= 13) {
-            return item.getType() == Material.FILLED_MAP;
-        } else {
-            return item.getType().name().equals("MAP");
-        }
+        return item != null && item.getType() == Material.FILLED_MAP;
     }
 
     @Override
