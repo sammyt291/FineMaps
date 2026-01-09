@@ -301,6 +301,13 @@ public class FineMapsPlugin extends JavaPlugin {
         // Try Folia's schedulers first (via reflection); on non-Folia this will fail and we fall back.
         if (scheduleFoliaRepeatingTask(interval, cleanup)) return;
 
+        // If we're on Folia and scheduling failed, do NOT fall back to Bukkit scheduler.
+        // (It will throw UnsupportedOperationException at runtime.)
+        if (NMSAdapterFactory.isFolia()) {
+            getLogger().warning("Folia detected but could not schedule cleanup task; skipping cleanup scheduler to avoid BukkitScheduler UnsupportedOperationException.");
+            return;
+        }
+
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, cleanup, interval, interval);
     }
 

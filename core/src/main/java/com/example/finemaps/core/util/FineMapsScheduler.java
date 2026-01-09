@@ -23,6 +23,34 @@ public final class FineMapsScheduler {
     }
 
     /**
+     * Returns true when running on a Folia-like runtime where Bukkit's legacy scheduler is unsupported.
+     *
+     * <p>We detect this by probing for Folia scheduler entry points on {@link Bukkit} instead of relying
+     * on class names, which can vary across builds.</p>
+     */
+    private static boolean isFoliaRuntime() {
+        try {
+            Bukkit.class.getMethod("getGlobalRegionScheduler");
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Opaque handle for a chained repeating task built from runDelayed calls.
+     */
+    private static final class ChainedRepeatingHandle {
+        private volatile boolean cancelled = false;
+        private volatile Object lastScheduledTask = null;
+
+        public void cancel() {
+            cancelled = true;
+            FineMapsScheduler.cancel(lastScheduledTask);
+        }
+    }
+
+    /**
      * Runs a task as soon as possible on the "main" execution context.
      *
      * <p>On Folia this uses the global region scheduler. On non-Folia it uses Bukkit's scheduler.</p>
@@ -110,6 +138,16 @@ public final class FineMapsScheduler {
         Object handle = tryRunGlobalAtFixedRate(plugin, runnable, initialDelayTicks, periodTicks);
         if (handle != null) return handle;
 
+        // Some Folia builds may not expose runAtFixedRate on all schedulers.
+        // Build a repeating task from chained runDelayed calls instead.
+        Object chained = tryRunGlobalChainedRepeating(plugin, runnable, initialDelayTicks, periodTicks);
+        if (chained != null) return chained;
+
+        // On Folia we must NOT fall back to Bukkit's legacy scheduler.
+        if (isFoliaRuntime() || NMSAdapterFactory.isFolia()) {
+            return null;
+        }
+
         return Bukkit.getScheduler().runTaskTimer(plugin, runnable, initialDelayTicks, periodTicks);
     }
 
@@ -132,6 +170,9 @@ public final class FineMapsScheduler {
         if (entity != null) {
             Object handle = tryRunEntityAtFixedRate(plugin, entity, runnable, initialDelayTicks, periodTicks);
             if (handle != null) return handle;
+
+            Object chained = tryRunEntityChainedRepeating(plugin, entity, runnable, initialDelayTicks, periodTicks);
+            if (chained != null) return chained;
         }
 
         return runSyncRepeating(plugin, runnable, initialDelayTicks, periodTicks);
@@ -209,6 +250,24 @@ public final class FineMapsScheduler {
         }
     }
 
+    private static Object invokeGlobalRunDelayed(Plugin plugin, Consumer<Object> consumer, long delayTicks) {
+        try {
+            Object globalRegionScheduler = Bukkit.class.getMethod("getGlobalRegionScheduler").invoke(null);
+            if (globalRegionScheduler == null) return null;
+
+            // GlobalRegionScheduler#runDelayed(Plugin, Consumer<ScheduledTask>, long)
+            java.lang.reflect.Method runDelayed = globalRegionScheduler.getClass().getMethod(
+                "runDelayed",
+                Plugin.class,
+                Consumer.class,
+                long.class
+            );
+            return runDelayed.invoke(globalRegionScheduler, plugin, consumer, delayTicks);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     private static Object tryRunGlobalAtFixedRate(Plugin plugin, Runnable runnable, long initialDelayTicks, long periodTicks) {
         try {
             Object globalRegionScheduler = Bukkit.class.getMethod("getGlobalRegionScheduler").invoke(null);
@@ -227,6 +286,34 @@ public final class FineMapsScheduler {
         } catch (Throwable ignored) {
             return null;
         }
+    }
+
+    private static Object tryRunGlobalChainedRepeating(Plugin plugin, Runnable runnable, long initialDelayTicks, long periodTicks) {
+        try {
+            // If we can't even get the global scheduler, bail quickly.
+            Bukkit.class.getMethod("getGlobalRegionScheduler");
+        } catch (Throwable ignored) {
+            return null;
+        }
+
+        final ChainedRepeatingHandle handle = new ChainedRepeatingHandle();
+
+        final Consumer<Object>[] runner = new Consumer[1];
+        runner[0] = ignoredTask -> {
+            if (handle.cancelled) return;
+            try {
+                runnable.run();
+            } catch (Throwable ignored) {
+                // Keep repeating even if the task body throws; caller can cancel if desired.
+            }
+            if (handle.cancelled) return;
+            Object next = invokeGlobalRunDelayed(plugin, runner[0], periodTicks);
+            handle.lastScheduledTask = next;
+        };
+
+        Object first = invokeGlobalRunDelayed(plugin, runner[0], initialDelayTicks);
+        handle.lastScheduledTask = first;
+        return first != null ? handle : null;
     }
 
     private static boolean tryRunAsyncNow(Plugin plugin, Runnable runnable) {
@@ -317,6 +404,37 @@ public final class FineMapsScheduler {
         }
     }
 
+    private static Object invokeEntityRunDelayed(Plugin plugin, Entity entity, Consumer<Object> consumer, long delayTicks) {
+        try {
+            Object entityScheduler = entity.getClass().getMethod("getScheduler").invoke(entity);
+            if (entityScheduler == null) return null;
+
+            // Preferred signature: EntityScheduler#runDelayed(Plugin, Consumer<ScheduledTask>, Runnable retired, long delay)
+            try {
+                java.lang.reflect.Method m = entityScheduler.getClass().getMethod(
+                    "runDelayed",
+                    Plugin.class,
+                    Consumer.class,
+                    Runnable.class,
+                    long.class
+                );
+                return m.invoke(entityScheduler, plugin, consumer, (Runnable) () -> {
+                }, delayTicks);
+            } catch (NoSuchMethodException ignored) {
+                // Alternate signature: EntityScheduler#runDelayed(Plugin, Consumer<ScheduledTask>, long delay)
+                java.lang.reflect.Method m = entityScheduler.getClass().getMethod(
+                    "runDelayed",
+                    Plugin.class,
+                    Consumer.class,
+                    long.class
+                );
+                return m.invoke(entityScheduler, plugin, consumer, delayTicks);
+            }
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     private static Object tryRunEntityAtFixedRate(Plugin plugin,
                                                  Entity entity,
                                                  Runnable runnable,
@@ -354,6 +472,41 @@ public final class FineMapsScheduler {
         } catch (Throwable ignored) {
             return null;
         }
+    }
+
+    private static Object tryRunEntityChainedRepeating(Plugin plugin, Entity entity, Runnable runnable, long initialDelayTicks, long periodTicks) {
+        if (entity == null) return null;
+        final ChainedRepeatingHandle handle = new ChainedRepeatingHandle();
+
+        final Consumer<Object>[] runner = new Consumer[1];
+        runner[0] = ignoredTask -> {
+            if (handle.cancelled) return;
+            try {
+                // If entity is no longer valid, stop rescheduling.
+                if (entity.isDead() || !entity.isValid()) {
+                    handle.cancelled = true;
+                    return;
+                }
+            } catch (Throwable ignored) {
+            }
+
+            try {
+                runnable.run();
+            } catch (Throwable ignored) {
+            }
+
+            if (handle.cancelled) return;
+            Object next = invokeEntityRunDelayed(plugin, entity, runner[0], periodTicks);
+            handle.lastScheduledTask = next;
+            if (next == null) {
+                // Can't schedule next tick; stop.
+                handle.cancelled = true;
+            }
+        };
+
+        Object first = invokeEntityRunDelayed(plugin, entity, runner[0], initialDelayTicks);
+        handle.lastScheduledTask = first;
+        return first != null ? handle : null;
     }
 }
 
