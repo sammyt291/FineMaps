@@ -27,7 +27,18 @@ public final class GifFrameStreamer {
         void onFrame(int index, BufferedImage compositedCanvasFrame) throws IOException;
     }
 
+    /**
+     * Callback to receive the expected total frame count once known.
+     */
+    public interface TotalFrameCallback {
+        void onTotalKnown(int expectedTotal);
+    }
+
     public static int stream(File file, int maxFrames, int maxCanvasSize, FrameConsumer consumer) throws IOException {
+        return stream(file, maxFrames, maxCanvasSize, consumer, null);
+    }
+
+    public static int stream(File file, int maxFrames, int maxCanvasSize, FrameConsumer consumer, TotalFrameCallback totalCallback) throws IOException {
         if (file == null) throw new IllegalArgumentException("file is null");
         if (consumer == null) throw new IllegalArgumentException("consumer is null");
 
@@ -50,6 +61,11 @@ public final class GifFrameStreamer {
                 int limit = num;
                 if (maxFrames > 0) {
                     limit = Math.min(limit, Math.max(1, maxFrames));
+                }
+
+                // Notify caller of expected total if known
+                if (totalCallback != null && limit != Integer.MAX_VALUE) {
+                    totalCallback.onTotalKnown(limit);
                 }
 
                 // Determine logical screen size from stream metadata when possible; else use first frame

@@ -1399,7 +1399,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
         AtomicInteger completed = new AtomicInteger(0);
         AtomicLong lastUpdateMs = new AtomicLong(0L);
-        AtomicInteger lastShown = new AtomicInteger(-1);
+        AtomicInteger lastPercent = new AtomicInteger(-1);
+        AtomicInteger expectedTotal = new AtomicInteger(0);
         Object lock = new Object();
 
         final boolean writePngFrames = false; // avoid huge disk usage for long GIFs
@@ -1448,10 +1449,10 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                         workerError.compareAndSet(null, t);
                     } finally {
                         int done = completed.incrementAndGet();
-                        maybeSendGifProgress(progressPlayer, done, lastUpdateMs, lastShown, lock);
+                        maybeSendGifProgress(progressPlayer, done, expectedTotal.get(), lastUpdateMs, lastPercent, lock);
                     }
                 });
-            });
+            }, total -> expectedTotal.set(total));
 
             // Wait for workers to finish
             exec.shutdown();
@@ -1465,6 +1466,9 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             }
 
             int totalFrames = Math.min(produced, submitted.get());
+
+            // Send final 100% progress
+            maybeSendGifProgress(progressPlayer, totalFrames, totalFrames, lastUpdateMs, lastPercent, lock);
 
             // Write meta for debugging (best-effort)
             try {
@@ -1491,24 +1495,48 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
     private void maybeSendGifProgress(Player player,
                                       int done,
+                                      int total,
                                       AtomicLong lastUpdateMs,
-                                      AtomicInteger lastShown,
+                                      AtomicInteger lastPercent,
                                       Object lock) {
         if (player == null) return;
         long now = System.currentTimeMillis();
-        synchronized (lock) {
-            long prevMs = lastUpdateMs.get();
-            if ((now - prevMs) < 250L) return;
-            int prev = lastShown.get();
-            if (done == prev) return;
-            lastShown.set(done);
-            lastUpdateMs.set(now);
+
+        // If total is known, show percentage-based progress bar
+        if (total > 0) {
+            int pct = Math.min(100, Math.max(0, (done * 100) / total));
+            synchronized (lock) {
+                int prevPct = lastPercent.get();
+                long prevMs = lastUpdateMs.get();
+                boolean timeOk = (now - prevMs) >= 200L;
+                boolean force = (pct == 0 || pct == 100);
+                if (!force && (!timeOk || pct == prevPct)) return;
+                lastPercent.set(pct);
+                lastUpdateMs.set(now);
+            }
+            String bar = progressBar(pct, 20);
+            String msg = ChatColor.YELLOW + "Rasterising " + ChatColor.WHITE + pct + "%" + ChatColor.DARK_GRAY +
+                " [" + bar + ChatColor.DARK_GRAY + "] " + ChatColor.GRAY + done + "/" + total;
+            FineMapsScheduler.runForEntity(plugin, player, () -> {
+                if (!player.isOnline()) return;
+                sendActionBar(player, msg);
+            });
+        } else {
+            // Total unknown, show frame count only
+            synchronized (lock) {
+                long prevMs = lastUpdateMs.get();
+                if ((now - prevMs) < 250L) return;
+                int prev = lastPercent.get();
+                if (done == prev) return;
+                lastPercent.set(done);
+                lastUpdateMs.set(now);
+            }
+            String msg = ChatColor.YELLOW + "Rasterising " + ChatColor.WHITE + done + ChatColor.GRAY + " frames...";
+            FineMapsScheduler.runForEntity(plugin, player, () -> {
+                if (!player.isOnline()) return;
+                sendActionBar(player, msg);
+            });
         }
-        String msg = ChatColor.YELLOW + "Rasterising GIF " + ChatColor.WHITE + done + ChatColor.GRAY + " frames...";
-        FineMapsScheduler.runForEntity(plugin, player, () -> {
-            if (!player.isOnline()) return;
-            sendActionBar(player, msg);
-        });
     }
 
     private boolean handleGive(CommandSender sender, String[] args) {
@@ -2330,8 +2358,15 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
 
         String bar = progressBar(pct, 20);
-        String msg = ChatColor.YELLOW + "Rasterising " + ChatColor.WHITE + pct + "%" + ChatColor.DARK_GRAY +
-            " [" + bar + ChatColor.DARK_GRAY + "] " + ChatColor.GRAY + done + "/" + total;
+        String msg;
+        if (total == 1) {
+            // Single frame - don't show "1/1", just show the progress bar
+            msg = ChatColor.YELLOW + "Rasterising " + ChatColor.WHITE + pct + "%" + ChatColor.DARK_GRAY +
+                " [" + bar + ChatColor.DARK_GRAY + "]";
+        } else {
+            msg = ChatColor.YELLOW + "Rasterising " + ChatColor.WHITE + pct + "%" + ChatColor.DARK_GRAY +
+                " [" + bar + ChatColor.DARK_GRAY + "] " + ChatColor.GRAY + done + "/" + total;
+        }
 
         FineMapsScheduler.runForEntity(plugin, player, () -> {
             if (!player.isOnline()) return;

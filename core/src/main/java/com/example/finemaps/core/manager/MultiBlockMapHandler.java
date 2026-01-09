@@ -334,25 +334,49 @@ public class MultiBlockMapHandler {
                 Block previewBlock = loc.getBlock();
                 Block behindBlock = previewBlock.getRelative(hitFace.getOppositeFace());
 
-                // Check if space is air and has solid block behind
-                if (!previewBlock.getType().isAir() || !behindBlock.getType().isSolid()) {
-                    canPlace = false;
-                }
-
-                // Check for existing item frames
+                // Check for existing item frames first
                 Location checkLoc = loc.clone().add(0.5, 0.5, 0.5);
+                boolean hasValidFrame = false;
+                boolean hasBlockingFrame = false;
                 try {
                     for (Entity entity : loc.getWorld().getNearbyEntities(checkLoc, 0.5, 0.5, 0.5)) {
                         if (entity instanceof ItemFrame) {
-                            canPlace = false;
-                            break;
+                            ItemFrame frame = (ItemFrame) entity;
+                            // Check if this frame is at the exact location and facing correct direction
+                            Location fl = frame.getLocation();
+                            if (fl.getBlockX() == loc.getBlockX() && 
+                                fl.getBlockY() == loc.getBlockY() && 
+                                fl.getBlockZ() == loc.getBlockZ() &&
+                                frame.getFacing() == hitFace) {
+                                // Check if frame is empty
+                                ItemStack frameItem = frame.getItem();
+                                if (frameItem == null || frameItem.getType() == Material.AIR) {
+                                    hasValidFrame = true;
+                                } else {
+                                    hasBlockingFrame = true;
+                                }
+                            } else {
+                                hasBlockingFrame = true;
+                            }
                         }
                     }
                 } catch (Throwable t) {
                     // If the server forbids cross-region entity queries (common on Folia near chunk/region borders),
                     // treat the placement as invalid for safety, but keep the preview running.
                     canPlace = false;
+                    continue;
                 }
+
+                if (hasBlockingFrame) {
+                    canPlace = false;
+                } else if (!hasValidFrame) {
+                    // No existing frame - check if we can spawn one
+                    // Check if space is air and has solid block behind
+                    if (!previewBlock.getType().isAir() || !behindBlock.getType().isSolid()) {
+                        canPlace = false;
+                    }
+                }
+                // If hasValidFrame is true and no blocking frames, placement is valid
             }
         }
         
@@ -799,12 +823,44 @@ public class MultiBlockMapHandler {
                 player.getInventory().setItemInMainHand(null);
             }
             
-            player.sendMessage(ChatColor.GREEN + "Map placed!");
+            sendPlacementToast(player, "Map placed!");
             stopPreviewTask(player);
             restartPreviewNextTick(player);
         }
         
         return success;
+    }
+
+    /**
+     * Sends a toast-style notification (title/subtitle) instead of a chat message.
+     * 
+     * @param player The player to notify
+     * @param message The message to display
+     */
+    private void sendPlacementToast(Player player, String message) {
+        if (player == null || message == null) return;
+        try {
+            // Use title API for toast-like notification
+            // Empty title, message as subtitle, with quick fade in/out
+            player.sendTitle(
+                "",  // Empty main title
+                ChatColor.GREEN + message,  // Subtitle with the message
+                5,   // Fade in (ticks) - 0.25 seconds
+                30,  // Stay (ticks) - 1.5 seconds
+                10   // Fade out (ticks) - 0.5 seconds
+            );
+        } catch (Throwable t) {
+            // Fallback to action bar if title fails
+            try {
+                player.spigot().sendMessage(
+                    net.md_5.bungee.api.ChatMessageType.ACTION_BAR,
+                    new net.md_5.bungee.api.chat.TextComponent(ChatColor.GREEN + message)
+                );
+            } catch (Throwable ignored) {
+                // Last resort: regular message
+                player.sendMessage(ChatColor.GREEN + message);
+            }
+        }
     }
 
     /**
@@ -842,7 +898,7 @@ public class MultiBlockMapHandler {
         if (success) {
             consumeFromHand(player, item, hand);
 
-            player.sendMessage(ChatColor.GREEN + "Map placed!");
+            sendPlacementToast(player, "Map placed!");
             stopPreviewTask(player);
             restartPreviewNextTick(player);
         }
@@ -990,7 +1046,7 @@ public class MultiBlockMapHandler {
         consumeFromHand(player, item, hand);
         stopPreviewTask(player);
         restartPreviewNextTick(player);
-        player.sendMessage(ChatColor.GREEN + "Map placed into item frames!");
+        sendPlacementToast(player, "Map placed!");
         return true;
     }
 
