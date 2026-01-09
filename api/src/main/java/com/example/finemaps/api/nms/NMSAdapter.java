@@ -5,8 +5,8 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
 /**
- * Interface for version-specific NMS operations.
- * Each supported Minecraft version implements this interface.
+ * Interface for NMS operations.
+ * Requires Minecraft 1.21+ (Java 21).
  */
 public interface NMSAdapter {
 
@@ -74,7 +74,7 @@ public interface NMSAdapter {
     boolean isFilledMap(ItemStack item);
 
     /**
-     * Spawns a block display entity showing a map (1.19.4+).
+     * Spawns a display entity showing a map.
      *
      * @param location The location to spawn at
      * @param mapId The map ID to display
@@ -90,9 +90,9 @@ public interface NMSAdapter {
     void removeDisplay(int entityId);
 
     /**
-     * Checks if block displays are supported.
+     * Checks if block displays are supported (always true on 1.21+).
      *
-     * @return true if supported (1.19.4+)
+     * @return true if supported
      */
     boolean supportsBlockDisplays();
 

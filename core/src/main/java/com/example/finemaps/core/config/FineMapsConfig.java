@@ -205,11 +205,11 @@ public class FineMapsConfig {
         @ConfigName("stale-time")
         private long staleTime = 86400000; // 24 hours
 
-        @Comment("Whether to show particle outlines for map previews on older versions")
+        @Comment("Whether to show particle outlines for map previews as fallback")
         @ConfigName("use-particles-legacy")
         private boolean useParticlesLegacy = true;
 
-        @Comment("Whether to use block displays for map previews on 1.19.4+")
+        @Comment("Whether to use block displays for map previews")
         @ConfigName("use-block-displays")
         private boolean useBlockDisplays = true;
 

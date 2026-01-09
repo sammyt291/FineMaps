@@ -23,11 +23,11 @@ public final class NMSAdapterFactory {
         String version = getServerVersion();
         logger.info("Detected server version: " + version);
 
-        // FineMaps requires Bukkit/Spigot 1.14+ (PersistentDataContainer, etc.).
+        // FineMaps requires Minecraft 1.21+ (Java 21 bytecode).
         int major = getMajorVersion();
-        if (major > 0 && major < 14) {
+        if (major > 0 && major < 21) {
             throw new UnsupportedOperationException(
-                "FineMaps requires Minecraft 1.14+ (detected: " + Bukkit.getBukkitVersion() + ")."
+                "FineMaps requires Minecraft 1.21+ (detected: " + Bukkit.getBukkitVersion() + ")."
             );
         }
 
@@ -210,11 +210,11 @@ public final class NMSAdapterFactory {
     }
 
     /**
-     * Checks if block displays are available (1.19.4+).
+     * Checks if block displays are available (always true on 1.21+).
      *
      * @return true if block displays are supported
      */
     public static boolean supportsBlockDisplays() {
-        return isVersionSupported(19, 4) || getMajorVersion() >= 20;
+        return true;
     }
 }

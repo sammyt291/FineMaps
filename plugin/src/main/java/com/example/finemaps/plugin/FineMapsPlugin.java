@@ -43,9 +43,9 @@ public class FineMapsPlugin extends JavaPlugin {
     private static FineMapsPlugin instance;
 
     /**
-     * FineMaps requires Bukkit/Spigot 1.14+ (PersistentDataContainer, etc.).
+     * FineMaps requires Minecraft 1.21+ (Java 21 bytecode).
      */
-    private static final int MIN_SUPPORTED_MAJOR = 14;
+    private static final int MIN_SUPPORTED_MAJOR = 21;
     
     private FineMapsConfig config;
     private DatabaseProvider database;
