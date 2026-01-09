@@ -316,6 +316,13 @@ public final class AnimationRegistry {
             return;
         }
 
+        // On Folia, getNearbyEntities must be called from the player's region thread.
+        if (FineMapsScheduler.isFolia()) {
+            rebuildViewerIndexFolia(animatedDbMapIds);
+            return;
+        }
+
+        // Non-Folia path: standard synchronous scan
         Map<Long, Map<UUID, Set<Integer>>> prev = viewersByDbMapId;
         Map<Long, Map<UUID, Set<Integer>>> next = new HashMap<>();
 
@@ -348,6 +355,114 @@ public final class AnimationRegistry {
         } else {
             // On the first scan after startup, treat everyone as "new".
             pushCurrentFramesToNewViewers(new HashMap<>(), next);
+        }
+    }
+
+    /**
+     * Folia-specific viewer index rebuild.
+     * On Folia, getNearbyEntities() must be called from the region thread that owns the entity.
+     * We schedule per-player scans on their entity schedulers and aggregate results.
+     */
+    private void rebuildViewerIndexFolia(Set<Long> animatedDbMapIds) {
+        Map<Long, Map<UUID, Set<Integer>>> prev = viewersByDbMapId;
+        // Use concurrent map for thread-safe updates from multiple region threads
+        ConcurrentHashMap<Long, ConcurrentHashMap<UUID, Set<Integer>>> next = new ConcurrentHashMap<>();
+
+        List<Player> players = new java.util.ArrayList<>(Bukkit.getOnlinePlayers());
+        if (players.isEmpty()) {
+            viewersByDbMapId = new HashMap<>();
+            return;
+        }
+
+        java.util.concurrent.atomic.AtomicInteger remaining = new java.util.concurrent.atomic.AtomicInteger(players.size());
+
+        for (Player player : players) {
+            if (player == null || !player.isOnline()) {
+                if (remaining.decrementAndGet() == 0) {
+                    finishViewerIndexSwapFolia(prev, next);
+                }
+                continue;
+            }
+
+            // Schedule the scan on the player's region thread (Folia entity scheduler)
+            FineMapsScheduler.runForEntity(plugin, player, () -> {
+                try {
+                    scanPlayerForViewersFolia(player, animatedDbMapIds, next);
+                } catch (Throwable ignored) {
+                    // Best effort; don't let one player's error stop the scan
+                }
+                if (remaining.decrementAndGet() == 0) {
+                    finishViewerIndexSwapFolia(prev, next);
+                }
+            });
+        }
+    }
+
+    private void scanPlayerForViewersFolia(Player player, Set<Long> animatedDbMapIds,
+                                           ConcurrentHashMap<Long, ConcurrentHashMap<UUID, Set<Integer>>> next) {
+        if (player == null || !player.isOnline()) return;
+        UUID uuid = player.getUniqueId();
+
+        // 1) In-hand/off-hand maps
+        addViewerFromItemConcurrent(next, animatedDbMapIds, uuid, player.getInventory().getItemInMainHand());
+        addViewerFromItemConcurrent(next, animatedDbMapIds, uuid, player.getInventory().getItemInOffHand());
+
+        // 2) Nearby item frames - now safe because we're on the player's region thread
+        try {
+            for (org.bukkit.entity.Entity e : player.getNearbyEntities(48, 48, 48)) {
+                if (!(e instanceof ItemFrame)) continue;
+                ItemFrame frame = (ItemFrame) e;
+                ItemStack item = frame.getItem();
+                addViewerFromItemConcurrent(next, animatedDbMapIds, uuid, item);
+            }
+        } catch (Throwable ignored) {
+            // Entity enumeration can still fail in edge cases; ignore
+        }
+    }
+
+    private void addViewerFromItemConcurrent(ConcurrentHashMap<Long, ConcurrentHashMap<UUID, Set<Integer>>> out,
+                                             Set<Long> animatedDbMapIds,
+                                             UUID playerUuid,
+                                             ItemStack item) {
+        if (item == null) return;
+        long dbMapId = mapManager.getMapIdFromItem(item);
+        if (dbMapId <= 0) return;
+        if (!animatedDbMapIds.contains(dbMapId)) return;
+
+        int vanillaMapId = nmsAdapter.getMapId(item);
+        if (vanillaMapId < 0) return;
+
+        // Re-bind after restart
+        try {
+            mapManager.bindMapViewToItem(item);
+        } catch (Throwable ignored) {
+        }
+
+        ConcurrentHashMap<UUID, Set<Integer>> byPlayer = out.computeIfAbsent(dbMapId, k -> new ConcurrentHashMap<>());
+        Set<Integer> mapIds = byPlayer.computeIfAbsent(playerUuid, k -> ConcurrentHashMap.newKeySet());
+        mapIds.add(vanillaMapId);
+    }
+
+    private void finishViewerIndexSwapFolia(Map<Long, Map<UUID, Set<Integer>>> prev,
+                                            ConcurrentHashMap<Long, ConcurrentHashMap<UUID, Set<Integer>>> next) {
+        // Convert ConcurrentHashMap structure to the expected type
+        Map<Long, Map<UUID, Set<Integer>>> converted = new HashMap<>();
+        for (Map.Entry<Long, ConcurrentHashMap<UUID, Set<Integer>>> e : next.entrySet()) {
+            Map<UUID, Set<Integer>> byPlayer = new HashMap<>();
+            for (Map.Entry<UUID, Set<Integer>> pe : e.getValue().entrySet()) {
+                byPlayer.put(pe.getKey(), new HashSet<>(pe.getValue()));
+            }
+            converted.put(e.getKey(), byPlayer);
+        }
+
+        // Swap in the new index
+        viewersByDbMapId = converted;
+
+        // Push current frames to newly-added viewers
+        if (prev != null && !prev.isEmpty()) {
+            pushCurrentFramesToNewViewers(prev, converted);
+        } else {
+            pushCurrentFramesToNewViewers(new HashMap<>(), converted);
         }
     }
 
