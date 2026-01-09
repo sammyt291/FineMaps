@@ -49,10 +49,10 @@ tasks {
         mergeServiceFiles()
         
         // Relocate shaded dependencies to avoid conflicts
-        relocate("com.zaxxer.hikari", "com.example.finemaps.libs.hikari")
+        relocate("com.zaxxer.hikari", "org.finetree.finemaps.libs.hikari")
         // Note: sqlite-jdbc cannot be relocated because it uses JNI native libraries
         // that are bound to the original class names. Relocating breaks native method binding.
-        relocate("redempt.redlib", "com.example.finemaps.libs.redlib")
+        relocate("redempt.redlib", "org.finetree.finemaps.libs.redlib")
     }
     
     build {

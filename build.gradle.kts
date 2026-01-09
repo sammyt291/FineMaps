@@ -3,7 +3,7 @@ plugins {
     `maven-publish`
 }
 
-group = "com.example.finemaps"
+group = "org.finetree.finemaps"
 version = "1.0.0"
 
 subprojects {
