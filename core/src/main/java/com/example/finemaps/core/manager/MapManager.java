@@ -13,6 +13,7 @@ import com.example.finemaps.core.database.DatabaseProvider;
 import com.example.finemaps.core.image.ImageProcessor;
 import com.example.finemaps.api.nms.NMSAdapter;
 import com.example.finemaps.core.render.MapViewManager;
+import com.example.finemaps.core.util.FineMapsScheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Player;
@@ -415,7 +416,7 @@ public class MapManager implements FineMapsAPI {
     public void giveMapToPlayerWithName(Player player, long mapId, String artName) {
         // Ensure map data is loaded first
         getMapData(mapId).thenAccept(optData -> {
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            FineMapsScheduler.runForEntity(plugin, player, () -> {
                 // Create the map item (this will also initialize the MapView)
                 ItemStack item = createMapItem(mapId);
                 
@@ -462,7 +463,7 @@ public class MapManager implements FineMapsAPI {
         // Pre-load all map data first, then give the item
         getMultiBlockMap(groupId).thenAccept(optMap -> {
             if (!optMap.isPresent()) {
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
                     player.sendMessage(org.bukkit.ChatColor.RED + "Map group not found!");
                 });
                 return;
@@ -485,7 +486,7 @@ public class MapManager implements FineMapsAPI {
             // Wait for all to load, then give item on main thread
             final String finalDisplayName = displayName;
             CompletableFuture.allOf(loadFutures.toArray(new CompletableFuture[0])).thenRun(() -> {
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
                     // Create the multi-block map item with name
                     ItemStack item = createMultiBlockMapItemWithName(groupId, finalDisplayName);
                     if (item != null) {
@@ -792,7 +793,7 @@ public class MapManager implements FineMapsAPI {
                 MapData data = optData.get();
                 
                 // Ensure the Bukkit MapView is created with the pixel data
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
                     mapViewManager.getOrCreateBukkitMapId(mapId, data.getPixelsUnsafe());
                     
                     // Invalidate for this player to trigger re-render
@@ -800,11 +801,12 @@ public class MapManager implements FineMapsAPI {
                     
                     // Fire event
                     getMap(mapId).thenAccept(optMap -> {
-                        if (optMap.isPresent()) {
+                        if (!optMap.isPresent()) return;
+                        FineMapsScheduler.runForEntity(plugin, player, () -> {
                             int bukkitMapId = mapViewManager.getBukkitMapId(mapId);
                             MapLoadEvent event = new MapLoadEvent(optMap.get(), player, bukkitMapId);
                             Bukkit.getPluginManager().callEvent(event);
-                        }
+                        });
                     });
                 });
             }

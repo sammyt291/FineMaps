@@ -1,6 +1,7 @@
 package com.example.finemaps.plugin.listener;
 
 import com.example.finemaps.core.manager.MapManager;
+import com.example.finemaps.core.util.FineMapsScheduler;
 import com.example.finemaps.plugin.FineMapsPlugin;
 import org.bukkit.Chunk;
 import org.bukkit.entity.Entity;
@@ -14,6 +15,7 @@ import org.bukkit.inventory.ItemStack;
 
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Handles chunk loading to send map data when maps come into view.
@@ -43,15 +45,12 @@ public class ChunkListener implements Listener {
         }
         
         try {
-            // Process chunk asynchronously to avoid blocking
-            plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
-                processChunkMaps(chunk, chunkKey);
-            });
+            // On Folia, BukkitScheduler is unsupported; also chunk/entity access must remain on the region thread.
+            // Process immediately on the calling thread (region thread on Folia, main thread elsewhere).
+            processChunkMaps(chunk, chunkKey);
         } finally {
             // Clean up after a delay to handle rapid chunk loading
-            plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-                processingChunks.remove(chunkKey);
-            }, 20L);
+            FineMapsScheduler.runLaterWallClock(() -> processingChunks.remove(chunkKey), 1L, TimeUnit.SECONDS);
         }
     }
 
@@ -64,61 +63,44 @@ public class ChunkListener implements Listener {
         try {
             // Find all item frames with stored maps in this chunk
             Set<Long> mapsToLoad = new HashSet<>();
-            
-            // Must access entities on main thread for some versions
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
-                for (Entity entity : chunk.getEntities()) {
-                    if (entity instanceof ItemFrame) {
-                        ItemFrame frame = (ItemFrame) entity;
-                        ItemStack item = frame.getItem();
-                        
-                        if (item != null && mapManager.isStoredMap(item)) {
-                            // Re-bind the existing Bukkit map id in this frame after restart.
-                            try {
-                                mapManager.bindMapViewToItem(item);
-                            } catch (Throwable ignored) {
-                            }
-                            long mapId = mapManager.getMapIdFromItem(item);
-                            if (mapId != -1) {
-                                mapsToLoad.add(mapId);
-                            }
+            Set<Player> playersInChunk = new HashSet<>();
+
+            for (Entity entity : chunk.getEntities()) {
+                if (entity instanceof Player) {
+                    playersInChunk.add((Player) entity);
+                    continue;
+                }
+
+                if (entity instanceof ItemFrame) {
+                    ItemFrame frame = (ItemFrame) entity;
+                    ItemStack item = frame.getItem();
+
+                    if (item != null && mapManager.isStoredMap(item)) {
+                        // Re-bind the existing Bukkit map id in this frame after restart.
+                        try {
+                            mapManager.bindMapViewToItem(item);
+                        } catch (Throwable ignored) {
+                        }
+                        long mapId = mapManager.getMapIdFromItem(item);
+                        if (mapId != -1) {
+                            mapsToLoad.add(mapId);
                         }
                     }
                 }
-                
-                // Send map data to nearby players
-                if (!mapsToLoad.isEmpty()) {
-                    sendMapsToNearbyPlayers(chunk, mapsToLoad);
-                }
-                
-                // End chunk processing
-                mapManager.endChunkProcessing(chunkKey);
-            });
-        } catch (Exception e) {
-            mapManager.endChunkProcessing(chunkKey);
-        }
-    }
+            }
 
-    private void sendMapsToNearbyPlayers(Chunk chunk, Set<Long> mapIds) {
-        // Get players who can see this chunk
-        int chunkX = chunk.getX();
-        int chunkZ = chunk.getZ();
-        
-        for (Player player : chunk.getWorld().getPlayers()) {
-            // Check if player is within view distance
-            int playerChunkX = player.getLocation().getBlockX() >> 4;
-            int playerChunkZ = player.getLocation().getBlockZ() >> 4;
-            
-            int viewDistance = plugin.getServer().getViewDistance();
-            
-            if (Math.abs(playerChunkX - chunkX) <= viewDistance &&
-                Math.abs(playerChunkZ - chunkZ) <= viewDistance) {
-                
-                // Send map data to this player
-                for (long mapId : mapIds) {
-                    mapManager.sendMapToPlayer(player, mapId);
+            if (!mapsToLoad.isEmpty() && !playersInChunk.isEmpty()) {
+                for (Player player : playersInChunk) {
+                    // Schedule on the player's entity scheduler on Folia, fallback otherwise.
+                    FineMapsScheduler.runForEntity(plugin, player, () -> {
+                        for (long mapId : mapsToLoad) {
+                            mapManager.sendMapToPlayer(player, mapId);
+                        }
+                    });
                 }
             }
+        } finally {
+            mapManager.endChunkProcessing(chunkKey);
         }
     }
 
