@@ -5,6 +5,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Entity;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitScheduler;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -92,6 +93,92 @@ public final class FineMapsScheduler {
     }
 
     /**
+     * Runs a task later (tick delay) on an entity's scheduler when available (Folia), otherwise falls back
+     * to {@link #runSyncDelayed(Plugin, Runnable, long)}.
+     */
+    public static void runForEntityDelayed(Plugin plugin, Entity entity, Runnable runnable, long delayTicks) {
+        if (plugin == null || runnable == null) return;
+        if (delayTicks < 0) delayTicks = 0;
+
+        if (NMSAdapterFactory.isFolia() && entity != null) {
+            if (tryRunEntityDelayed(plugin, entity, runnable, delayTicks)) {
+                return;
+            }
+        }
+
+        runSyncDelayed(plugin, runnable, delayTicks);
+    }
+
+    /**
+     * Schedules a repeating task (tick-based) in a Folia-safe way.
+     *
+     * <p>On Folia this uses the global region scheduler. On non-Folia it uses Bukkit's scheduler.</p>
+     *
+     * @return an opaque handle that can be cancelled via {@link #cancel(Object)} (may be null on failure)
+     */
+    public static Object runSyncRepeating(Plugin plugin, Runnable runnable, long initialDelayTicks, long periodTicks) {
+        if (plugin == null || runnable == null) return null;
+        if (initialDelayTicks < 0) initialDelayTicks = 0;
+        if (periodTicks < 1) periodTicks = 1;
+
+        if (NMSAdapterFactory.isFolia()) {
+            Object handle = tryRunGlobalAtFixedRate(plugin, runnable, initialDelayTicks, periodTicks);
+            if (handle != null) {
+                return handle;
+            }
+        }
+
+        return Bukkit.getScheduler().runTaskTimer(plugin, runnable, initialDelayTicks, periodTicks);
+    }
+
+    /**
+     * Schedules a repeating task on an entity's scheduler when available (Folia).
+     * This is typically the safest option for per-player/per-entity repeating work on Folia.
+     *
+     * @return an opaque handle that can be cancelled via {@link #cancel(Object)} (may be null on failure)
+     */
+    public static Object runForEntityRepeating(Plugin plugin,
+                                               Entity entity,
+                                               Runnable runnable,
+                                               long initialDelayTicks,
+                                               long periodTicks) {
+        if (plugin == null || runnable == null) return null;
+        if (initialDelayTicks < 0) initialDelayTicks = 0;
+        if (periodTicks < 1) periodTicks = 1;
+
+        if (NMSAdapterFactory.isFolia() && entity != null) {
+            Object handle = tryRunEntityAtFixedRate(plugin, entity, runnable, initialDelayTicks, periodTicks);
+            if (handle != null) {
+                return handle;
+            }
+        }
+
+        return runSyncRepeating(plugin, runnable, initialDelayTicks, periodTicks);
+    }
+
+    /**
+     * Cancels a task handle returned by {@link #runSyncRepeating(Plugin, Runnable, long, long)} or
+     * {@link #runForEntityRepeating(Plugin, Entity, Runnable, long, long)}.
+     */
+    public static void cancel(Object taskHandle) {
+        if (taskHandle == null) return;
+        try {
+            if (taskHandle instanceof BukkitTask) {
+                ((BukkitTask) taskHandle).cancel();
+                return;
+            }
+        } catch (Throwable ignored) {
+        }
+
+        try {
+            // Paper/Folia ScheduledTask has cancel()
+            java.lang.reflect.Method cancel = taskHandle.getClass().getMethod("cancel");
+            cancel.invoke(taskHandle);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
      * Runs a task later using wall-clock time. This is provided as an escape hatch for situations where
      * a simple delay is needed but tick-based scheduling is not required.
      */
@@ -138,6 +225,26 @@ public final class FineMapsScheduler {
             return true;
         } catch (Throwable ignored) {
             return false;
+        }
+    }
+
+    private static Object tryRunGlobalAtFixedRate(Plugin plugin, Runnable runnable, long initialDelayTicks, long periodTicks) {
+        try {
+            Object globalRegionScheduler = Bukkit.class.getMethod("getGlobalRegionScheduler").invoke(null);
+            if (globalRegionScheduler == null) return null;
+
+            // GlobalRegionScheduler#runAtFixedRate(Plugin, Consumer<ScheduledTask>, long, long)
+            java.lang.reflect.Method runAtFixedRate = globalRegionScheduler.getClass().getMethod(
+                "runAtFixedRate",
+                Plugin.class,
+                Consumer.class,
+                long.class,
+                long.class
+            );
+            Consumer<Object> consumer = ignoredTask -> runnable.run();
+            return runAtFixedRate.invoke(globalRegionScheduler, plugin, consumer, initialDelayTicks, periodTicks);
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 
@@ -191,6 +298,80 @@ public final class FineMapsScheduler {
             }
         } catch (Throwable ignored) {
             return false;
+        }
+    }
+
+    private static boolean tryRunEntityDelayed(Plugin plugin, Entity entity, Runnable runnable, long delayTicks) {
+        try {
+            Object entityScheduler = entity.getClass().getMethod("getScheduler").invoke(entity);
+            if (entityScheduler == null) return false;
+
+            Consumer<Object> consumer = ignoredTask -> runnable.run();
+
+            // Preferred signature: EntityScheduler#runDelayed(Plugin, Consumer<ScheduledTask>, Runnable retired, long delay)
+            try {
+                java.lang.reflect.Method m = entityScheduler.getClass().getMethod(
+                    "runDelayed",
+                    Plugin.class,
+                    Consumer.class,
+                    Runnable.class,
+                    long.class
+                );
+                m.invoke(entityScheduler, plugin, consumer, (Runnable) () -> {
+                }, delayTicks);
+                return true;
+            } catch (NoSuchMethodException ignored) {
+                // Alternate signature: EntityScheduler#runDelayed(Plugin, Consumer<ScheduledTask>, long delay)
+                java.lang.reflect.Method m = entityScheduler.getClass().getMethod(
+                    "runDelayed",
+                    Plugin.class,
+                    Consumer.class,
+                    long.class
+                );
+                m.invoke(entityScheduler, plugin, consumer, delayTicks);
+                return true;
+            }
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static Object tryRunEntityAtFixedRate(Plugin plugin,
+                                                 Entity entity,
+                                                 Runnable runnable,
+                                                 long initialDelayTicks,
+                                                 long periodTicks) {
+        try {
+            Object entityScheduler = entity.getClass().getMethod("getScheduler").invoke(entity);
+            if (entityScheduler == null) return null;
+
+            Consumer<Object> consumer = ignoredTask -> runnable.run();
+
+            // Preferred signature: EntityScheduler#runAtFixedRate(Plugin, Consumer<ScheduledTask>, Runnable retired, long, long)
+            try {
+                java.lang.reflect.Method m = entityScheduler.getClass().getMethod(
+                    "runAtFixedRate",
+                    Plugin.class,
+                    Consumer.class,
+                    Runnable.class,
+                    long.class,
+                    long.class
+                );
+                return m.invoke(entityScheduler, plugin, consumer, (Runnable) () -> {
+                }, initialDelayTicks, periodTicks);
+            } catch (NoSuchMethodException ignored) {
+                // Alternate signature: EntityScheduler#runAtFixedRate(Plugin, Consumer<ScheduledTask>, long, long)
+                java.lang.reflect.Method m = entityScheduler.getClass().getMethod(
+                    "runAtFixedRate",
+                    Plugin.class,
+                    Consumer.class,
+                    long.class,
+                    long.class
+                );
+                return m.invoke(entityScheduler, plugin, consumer, initialDelayTicks, periodTicks);
+            }
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 }

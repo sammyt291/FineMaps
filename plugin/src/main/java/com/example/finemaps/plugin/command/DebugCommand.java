@@ -3,6 +3,7 @@ package com.example.finemaps.plugin.command;
 import com.example.finemaps.api.map.MapData;
 import com.example.finemaps.core.database.DatabaseProvider;
 import com.example.finemaps.core.manager.MapManager;
+import com.example.finemaps.core.util.FineMapsScheduler;
 import com.example.finemaps.plugin.FineMapsPlugin;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -16,7 +17,6 @@ import org.bukkit.entity.EntityType;
 import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -53,7 +53,7 @@ public class DebugCommand {
     private volatile SeedState seedState;
 
     // Only allow one placement runner at a time to avoid consuming duplicates
-    private volatile BukkitTask activePlaceTask;
+    private volatile Object activePlaceTask;
 
     public DebugCommand(FineMapsPlugin plugin) {
         this.plugin = plugin;
@@ -106,9 +106,9 @@ public class DebugCommand {
     }
 
     private boolean handleStop(Player player) {
-        BukkitTask task = activePlaceTask;
+        Object task = activePlaceTask;
         if (task != null) {
-            task.cancel();
+            FineMapsScheduler.cancel(task);
             activePlaceTask = null;
             player.sendMessage(ChatColor.GREEN + "Stopped map placement task.");
         } else {
@@ -196,13 +196,15 @@ public class DebugCommand {
             seeding.set(false);
             if (err != null) {
                 plugin.getLogger().warning("Seed failed: " + err.getMessage());
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                    if (!player.isOnline()) return;
                     player.sendMessage(ChatColor.RED + "Seed failed: " + err.getMessage());
                 });
                 return;
             }
 
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            FineMapsScheduler.runForEntity(plugin, player, () -> {
+                if (!player.isOnline()) return;
                 long ms = System.currentTimeMillis() - startedAt;
                 player.sendMessage(ChatColor.GREEN + "Seed complete: " + num + " maps in " + ms + "ms");
                 player.sendMessage(ChatColor.GRAY + "Ready for: " + ChatColor.YELLOW + "/" + baseLabel + " placemaps <mapsPerSecond>");
@@ -238,7 +240,8 @@ public class DebugCommand {
                 int done = state.seeded.addAndGet(endInclusive - startInclusive + 1);
                 // Light progress ping every ~2k maps (sync to main thread)
                 if (done % 2000 == 0 || done == state.total) {
-                    Bukkit.getScheduler().runTask(plugin, () -> {
+                    FineMapsScheduler.runForEntity(plugin, player, () -> {
+                        if (!player.isOnline()) return;
                         long ms = System.currentTimeMillis() - startedAt;
                         player.sendMessage(ChatColor.GRAY + "Seed progress: " + ChatColor.WHITE + done + "/" + state.total + ChatColor.DARK_GRAY + " (" + ms + "ms)");
                     });
@@ -266,7 +269,7 @@ public class DebugCommand {
 
         // Cancel any existing runner
         if (activePlaceTask != null) {
-            activePlaceTask.cancel();
+            FineMapsScheduler.cancel(activePlaceTask);
             activePlaceTask = null;
         }
 
@@ -301,11 +304,14 @@ public class DebugCommand {
         ).whenComplete((snapshot, err) -> {
             if (err != null) {
                 plugin.getLogger().warning("placemaps failed to load ids: " + err.getMessage());
-                Bukkit.getScheduler().runTask(plugin, () -> player.sendMessage(ChatColor.RED + "Failed to load maps: " + err.getMessage()));
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                    if (!player.isOnline()) return;
+                    player.sendMessage(ChatColor.RED + "Failed to load maps: " + err.getMessage());
+                });
                 return;
             }
 
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            FineMapsScheduler.runForEntity(plugin, player, () -> {
                 if (!player.isOnline()) {
                     return;
                 }
@@ -322,7 +328,7 @@ public class DebugCommand {
 
                 PlaceState placeState = new PlaceState(start, front, right, mapsPerSecond, ids, total, startedAt);
 
-                activePlaceTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+                activePlaceTask = FineMapsScheduler.runForEntityRepeating(plugin, player, () -> {
                     if (!player.isOnline()) {
                         handleStop(player);
                         return;

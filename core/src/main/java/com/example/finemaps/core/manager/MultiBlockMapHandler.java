@@ -2,6 +2,7 @@ package com.example.finemaps.core.manager;
 
 import com.example.finemaps.api.map.MultiBlockMap;
 import com.example.finemaps.api.map.StoredMap;
+import com.example.finemaps.core.util.FineMapsScheduler;
 import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -13,8 +14,6 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitRunnable;
-import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.RayTraceResult;
 import org.bukkit.inventory.EquipmentSlot;
 
@@ -75,7 +74,7 @@ public class MultiBlockMapHandler {
     private final Map<Long, PlacementMode> instanceToMode = new ConcurrentHashMap<>();
     
     // Track preview tasks per player
-    private final Map<UUID, BukkitTask> playerPreviewTasks = new ConcurrentHashMap<>();
+    private final Map<UUID, Object> playerPreviewTasks = new ConcurrentHashMap<>();
     
     // Track preview display entity per player (for block display previews)
     private final Map<UUID, Integer> playerPreviewDisplay = new ConcurrentHashMap<>();
@@ -200,7 +199,7 @@ public class MultiBlockMapHandler {
         UUID playerId = player.getUniqueId();
 
         // If already running, don't restart (important: this can be called by pickup/inventory events).
-        BukkitTask existingTask = playerPreviewTasks.get(playerId);
+        Object existingTask = playerPreviewTasks.get(playerId);
         if (existingTask != null) {
             playersWithPreview.add(playerId);
             return;
@@ -208,35 +207,30 @@ public class MultiBlockMapHandler {
 
         playersWithPreview.add(playerId);
         
-        BukkitTask task = new BukkitRunnable() {
-            @Override
-            public void run() {
-                Player p = plugin.getServer().getPlayer(playerId);
-                if (p == null || !p.isOnline()) {
-                    stopPreviewTask(p != null ? p : player);
-                    cancel();
-                    return;
-                }
-                
-                // Prefer main-hand, fall back to off-hand
-                ItemStack held = p.getInventory().getItemInMainHand();
-                if (held == null || !mapManager.isStoredMap(held)) {
-                    held = p.getInventory().getItemInOffHand();
-                }
-                if (held == null || !mapManager.isStoredMap(held)) {
-                    clearPreview(p);
-                    stopPreviewTask(p);
-                    cancel();
-                    return;
-                }
-
-                // Show preview outline (1x1 for single maps, WxH for multi-block items)
-                long groupId = mapManager.getGroupIdFromItem(held);
-                int width = groupId > 0 ? mapManager.getMultiBlockWidth(held) : 1;
-                int height = groupId > 0 ? mapManager.getMultiBlockHeight(held) : 1;
-                showPlacementPreview(p, held, width, height);
+        Object task = FineMapsScheduler.runForEntityRepeating(plugin, player, () -> {
+            Player p = plugin.getServer().getPlayer(playerId);
+            if (p == null || !p.isOnline()) {
+                stopPreviewTask(p != null ? p : player);
+                return;
             }
-        }.runTaskTimer(plugin, 0L, 4L); // Update every 4 ticks (0.2s)
+
+            // Prefer main-hand, fall back to off-hand
+            ItemStack held = p.getInventory().getItemInMainHand();
+            if (held == null || !mapManager.isStoredMap(held)) {
+                held = p.getInventory().getItemInOffHand();
+            }
+            if (held == null || !mapManager.isStoredMap(held)) {
+                clearPreview(p);
+                stopPreviewTask(p);
+                return;
+            }
+
+            // Show preview outline (1x1 for single maps, WxH for multi-block items)
+            long groupId = mapManager.getGroupIdFromItem(held);
+            int width = groupId > 0 ? mapManager.getMultiBlockWidth(held) : 1;
+            int height = groupId > 0 ? mapManager.getMultiBlockHeight(held) : 1;
+            showPlacementPreview(p, held, width, height);
+        }, 0L, 4L); // Update every 4 ticks (0.2s)
         
         playerPreviewTasks.put(playerId, task);
     }
@@ -253,9 +247,9 @@ public class MultiBlockMapHandler {
         playersWithPreview.remove(playerId);
         
         // Cancel the task
-        BukkitTask task = playerPreviewTasks.remove(playerId);
+        Object task = playerPreviewTasks.remove(playerId);
         if (task != null) {
-            task.cancel();
+            FineMapsScheduler.cancel(task);
         }
         
         clearPreview(player);
@@ -988,7 +982,7 @@ public class MultiBlockMapHandler {
 
     private void restartPreviewNextTick(Player player) {
         if (player == null) return;
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+        FineMapsScheduler.runForEntityDelayed(plugin, player, () -> {
             try {
                 if (!player.isOnline()) return;
                 ItemStack main = player.getInventory().getItemInMainHand();

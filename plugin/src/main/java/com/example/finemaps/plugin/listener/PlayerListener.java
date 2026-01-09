@@ -2,6 +2,7 @@ package com.example.finemaps.plugin.listener;
 
 import com.example.finemaps.core.manager.MapManager;
 import com.example.finemaps.core.manager.MultiBlockMapHandler;
+import com.example.finemaps.core.util.FineMapsScheduler;
 import com.example.finemaps.plugin.FineMapsPlugin;
 import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.chat.TextComponent;
@@ -41,7 +42,7 @@ public class PlayerListener implements Listener {
         Player player = event.getPlayer();
         
         // Schedule delayed task to send map data for held maps
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+        FineMapsScheduler.runForEntityDelayed(plugin, player, () -> {
             if (!player.isOnline()) return;
             
             // Check inventory for stored maps and send their data
@@ -95,7 +96,7 @@ public class PlayerListener implements Listener {
         multiBlockHandler.stopPreviewTask(player);
         
         // Check if new item is a multi-block map (delayed to get actual item)
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+        FineMapsScheduler.runForEntityDelayed(plugin, player, () -> {
             checkAndStartPreview(player);
         }, 1L);
     }
@@ -117,7 +118,7 @@ public class PlayerListener implements Listener {
         }
 
         // Delay 1 tick so inventory changes are applied.
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> checkAndStartPreview(player), 1L);
+        FineMapsScheduler.runForEntityDelayed(plugin, player, () -> checkAndStartPreview(player), 1L);
     }
 
     /**
@@ -127,7 +128,7 @@ public class PlayerListener implements Listener {
     public void onSwapHands(PlayerSwapHandItemsEvent event) {
         Player player = event.getPlayer();
         // Delay 1 tick so the swap is applied.
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> checkAndStartPreview(player), 1L);
+        FineMapsScheduler.runForEntityDelayed(plugin, player, () -> checkAndStartPreview(player), 1L);
     }
 
     /**
@@ -150,7 +151,7 @@ public class PlayerListener implements Listener {
             return;
         }
 
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> checkAndStartPreview(player), 1L);
+        FineMapsScheduler.runForEntityDelayed(plugin, player, () -> checkAndStartPreview(player), 1L);
     }
     
     @EventHandler(priority = EventPriority.HIGH)

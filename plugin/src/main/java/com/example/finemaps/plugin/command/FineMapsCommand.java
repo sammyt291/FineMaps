@@ -8,6 +8,7 @@ import com.example.finemaps.core.config.FineMapsConfig;
 import com.example.finemaps.core.image.ImageProcessor;
 import com.example.finemaps.core.manager.MapManager;
 import com.example.finemaps.core.util.ByteSizeParser;
+import com.example.finemaps.core.util.FineMapsScheduler;
 import com.example.finemaps.plugin.FineMapsPlugin;
 import com.example.finemaps.plugin.util.VanillaMapDatReader;
 import com.example.finemaps.plugin.url.AnimatedImage;
@@ -30,7 +31,6 @@ import org.bukkit.entity.Player;
 import org.bukkit.map.MapCanvas;
 import org.bukkit.map.MapRenderer;
 import org.bukkit.map.MapView;
-import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.World;
 import org.bukkit.configuration.file.FileConfiguration;
 import redempt.redlib.inventorygui.InventoryGUI;
@@ -57,6 +57,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.concurrent.TimeUnit;
 
@@ -221,7 +222,10 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
         // Load/refresh arts asynchronously, then open GUI on main thread.
         mapManager.refreshArtSummaries("finemaps").thenAccept(arts -> {
-            plugin.getServer().getScheduler().runTask(plugin, () -> openArtBrowserGui(player, arts));
+            FineMapsScheduler.runForEntity(plugin, player, () -> {
+                if (!player.isOnline()) return;
+                openArtBrowserGui(player, arts);
+            });
         });
         return true;
     }
@@ -449,7 +453,10 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                 long groupId = optGroup.get();
                 mapManager.getMultiBlockMap(groupId).thenAccept(optMap -> {
                     if (!optMap.isPresent()) {
-                        plugin.getServer().getScheduler().runTask(plugin, () -> player.sendMessage(ChatColor.RED + "Map not found: " + name));
+                        FineMapsScheduler.runForEntity(plugin, player, () -> {
+                            if (!player.isOnline()) return;
+                            player.sendMessage(ChatColor.RED + "Map not found: " + name);
+                        });
                         return;
                     }
                     MultiBlockMap mm = optMap.get();
@@ -461,7 +468,10 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             }
             mapManager.getMapByName("finemaps", name).thenAccept(optMapId -> {
                 if (!optMapId.isPresent()) {
-                    plugin.getServer().getScheduler().runTask(plugin, () -> player.sendMessage(ChatColor.RED + "Map not found: " + name));
+                    FineMapsScheduler.runForEntity(plugin, player, () -> {
+                        if (!player.isOnline()) return;
+                        player.sendMessage(ChatColor.RED + "Map not found: " + name);
+                    });
                     return;
                 }
                 long mapId = optMapId.get();
@@ -476,7 +486,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         Economy eco = plugin.getEconomy();
         if (eco == null) return;
 
-        plugin.getServer().getScheduler().runTask(plugin, () -> {
+        FineMapsScheduler.runForEntity(plugin, player, () -> {
             if (!player.isOnline()) return;
             if (cost > 0.0) {
                 try {
@@ -509,16 +519,25 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         mapManager.getGroupByName("finemaps", name).thenAccept(optGroupId -> {
             if (optGroupId.isPresent()) {
                 long groupId = optGroupId.get();
-                plugin.getServer().getScheduler().runTask(plugin, () -> mapManager.giveMultiBlockMapToPlayerWithName(player, groupId, name));
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                    if (!player.isOnline()) return;
+                    mapManager.giveMultiBlockMapToPlayerWithName(player, groupId, name);
+                });
                 return;
             }
             mapManager.getMapByName("finemaps", name).thenAccept(optMapId -> {
                 if (!optMapId.isPresent()) {
-                    plugin.getServer().getScheduler().runTask(plugin, () -> player.sendMessage(ChatColor.RED + "Map not found: " + name));
+                    FineMapsScheduler.runForEntity(plugin, player, () -> {
+                        if (!player.isOnline()) return;
+                        player.sendMessage(ChatColor.RED + "Map not found: " + name);
+                    });
                     return;
                 }
                 long mapId = optMapId.get();
-                plugin.getServer().getScheduler().runTask(plugin, () -> mapManager.giveMapToPlayerWithName(player, mapId, name));
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                    if (!player.isOnline()) return;
+                    mapManager.giveMapToPlayerWithName(player, mapId, name);
+                });
             });
         });
     }
@@ -605,13 +624,15 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
 
         nameCheck.thenAccept(taken -> {
             if (taken) {
-                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                    if (!player.isOnline()) return;
                     player.sendMessage(ChatColor.RED + "An art with the name '" + finalArtName + "' already exists.");
                 });
                 return;
             }
 
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
+            FineMapsScheduler.runForEntity(plugin, player, () -> {
+                if (!player.isOnline()) return;
                 player.sendMessage(ChatColor.YELLOW + "Importing vanilla map #" + finalBukkitMapId + "...");
             });
 
@@ -619,7 +640,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                 // Store as a new FineMaps map (snapshot)
                 return mapManager.createMapWithName("finemaps", pixels, finalArtName);
             }).thenAccept(storedMap -> {
-                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                    if (!player.isOnline()) return;
                     if (finalArtName != null) {
                         mapManager.giveMapToPlayerWithName(player, storedMap.getId(), finalArtName);
                         player.sendMessage(ChatColor.GREEN + "Imported vanilla map #" + finalBukkitMapId + " as '" + finalArtName + "'.");
@@ -629,7 +651,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                     }
                 });
             }).exceptionally(err -> {
-                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                    if (!player.isOnline()) return;
                     player.sendMessage(ChatColor.RED + "Failed to import vanilla map: " + (err.getMessage() != null ? err.getMessage() : err.toString()));
                 });
                 return null;
@@ -738,7 +761,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             });
         }
 
-        chain.whenComplete((v, err) -> plugin.getServer().getScheduler().runTask(plugin, () -> {
+        chain.whenComplete((v, err) -> FineMapsScheduler.runForEntity(plugin, player, () -> {
+            if (!player.isOnline()) return;
             if (err != null) {
                 player.sendMessage(ChatColor.RED + "Bulk import finished with errors: " + err.getMessage());
             }
@@ -795,7 +819,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         if (player == null) return;
         // Update every 100 maps and at the end.
         if (done == total || done % 100 == 0) {
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
+            FineMapsScheduler.runForEntity(plugin, player, () -> {
+                if (!player.isOnline()) return;
                 player.sendMessage(ChatColor.GRAY + "Import progress: " + done + "/" + total);
             });
         }
@@ -882,36 +907,42 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         view.addRenderer(captureRenderer);
 
         // Repeatedly trigger map sending until render happens (or timeout).
-        new BukkitRunnable() {
-            long ticks = 0;
+        final long[] ticks = new long[] {0L};
+        final AtomicReference<Object> taskRef = new AtomicReference<>(null);
 
-            @Override
-            public void run() {
-                if (future.isDone()) {
-                    cleanup();
-                    cancel();
-                    return;
-                }
-                if (ticks++ >= timeoutTicks) {
-                    future.completeExceptionally(new RuntimeException("Timed out waiting for map render"));
-                    cleanup();
-                    cancel();
-                    return;
-                }
-                try {
+        Runnable cleanup = () -> {
+            try {
+                view.removeRenderer(captureRenderer);
+            } catch (Throwable ignored) {
+            }
+        };
+
+        Runnable tick = () -> {
+            if (future.isDone()) {
+                cleanup.run();
+                FineMapsScheduler.cancel(taskRef.getAndSet(null));
+                return;
+            }
+            if (ticks[0]++ >= timeoutTicks) {
+                future.completeExceptionally(new RuntimeException("Timed out waiting for map render"));
+                cleanup.run();
+                FineMapsScheduler.cancel(taskRef.getAndSet(null));
+                return;
+            }
+            try {
+                if (player.isOnline()) {
                     player.sendMap(view);
-                } catch (Throwable ignored) {
-                    // Best-effort; render may still happen via normal tick updates
                 }
+            } catch (Throwable ignored) {
+                // Best-effort; render may still happen via normal tick updates
             }
+        };
 
-            private void cleanup() {
-                try {
-                    view.removeRenderer(captureRenderer);
-                } catch (Throwable ignored) {
-                }
-            }
-        }.runTaskTimer(plugin, 0L, 1L);
+        Object handle = FineMapsScheduler.runForEntityRepeating(plugin, player, tick, 0L, 1L);
+        if (handle == null) {
+            handle = FineMapsScheduler.runSyncRepeating(plugin, tick, 0L, 1L);
+        }
+        taskRef.set(handle);
 
         return future;
     }
@@ -959,7 +990,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         Arrays.fill(pixels, (byte) 34); // White color
 
         mapManager.createMap("finemaps", pixels).thenAccept(map -> {
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
+            FineMapsScheduler.runForEntity(plugin, player, () -> {
+                if (!player.isOnline()) return;
                 mapManager.giveMapToPlayer(player, map.getId());
                 player.sendMessage(ChatColor.GREEN + "Created blank map with ID: " + map.getId());
             });
@@ -1105,7 +1137,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         // Check if name is already taken
         mapManager.isNameTaken("finemaps", artName).thenAccept(taken -> {
             if (taken) {
-                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                    if (!player.isOnline()) return;
                     player.sendMessage(ChatColor.RED + "An art with the name '" + finalArtName + "' already exists.");
                 });
                 return;
@@ -1114,7 +1147,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             player.sendMessage(ChatColor.YELLOW + "Downloading and processing image...");
 
             // Process image asynchronously
-            plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+            FineMapsScheduler.runAsync(plugin, () -> {
                 try {
                     // Download (with max-bytes sanity check) and cache original file on disk
                     Path downloaded = downloadAndCacheUrlImage(urlStr);
@@ -1157,7 +1190,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                             // Treat as static
                             if (finalWidth == 1 && finalHeight == 1) {
                                 mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
-                                    plugin.getServer().getScheduler().runTask(plugin, () -> {
+                                    FineMapsScheduler.runForEntity(plugin, player, () -> {
+                                        if (!player.isOnline()) return;
                                         mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
                                         player.sendMessage(ChatColor.GREEN + "Created map '" + finalArtName + "' from image!");
                                     });
@@ -1165,7 +1199,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                             } else {
                                 mapManager.createMultiBlockMapWithName("finemaps", firstFrame, finalWidth, finalHeight, finalRaster, finalArtName)
                                     .thenAccept(multiMap -> {
-                                        plugin.getServer().getScheduler().runTask(plugin, () -> {
+                                        FineMapsScheduler.runForEntity(plugin, player, () -> {
+                                            if (!player.isOnline()) return;
                                             mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
                                             player.sendMessage(ChatColor.GREEN + "Created " + finalWidth + "x" + finalHeight +
                                                 " map '" + finalArtName + "'!");
@@ -1182,7 +1217,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                             mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
                                 plugin.getAnimationRegistry().registerAndStartSingleFromCache(finalArtName, map.getId(), fpsFinal, urlStr, 1, 1, finalRaster);
                                 plugin.getAnimationRegistry().persistSingleDefinition(finalArtName, urlStr, 1, 1, finalRaster, fpsFinal, map.getId());
-                                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                                    if (!player.isOnline()) return;
                                     mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
                                     player.sendMessage(ChatColor.GREEN + "Created animated map '" + finalArtName + "' (" + fpsFinal + " fps, " + cachedFrameCount + " frames)");
                                 });
@@ -1193,7 +1229,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                                     List<Long> mapIds = tileOrderMapIds(multiMap, finalWidth, finalHeight);
                                     plugin.getAnimationRegistry().registerAndStartMultiFromCache(finalArtName, mapIds, finalWidth, finalHeight, fpsFinal, urlStr, finalRaster);
                                     plugin.getAnimationRegistry().persistMultiDefinition(finalArtName, urlStr, finalWidth, finalHeight, finalRaster, fpsFinal, multiMap.getGroupId());
-                                    plugin.getServer().getScheduler().runTask(plugin, () -> {
+                                    FineMapsScheduler.runForEntity(plugin, player, () -> {
+                                        if (!player.isOnline()) return;
                                         mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
                                         player.sendMessage(ChatColor.GREEN + "Created animated " + finalWidth + "x" + finalHeight +
                                             " map '" + finalArtName + "' (" + fpsFinal + " fps, " + cachedFrameCount + " frames)");
@@ -1242,7 +1279,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                         // Create static map(s)
                         if (finalWidth == 1 && finalHeight == 1) {
                             mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
-                                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                                    if (!player.isOnline()) return;
                                     mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
                                     player.sendMessage(ChatColor.GREEN + "Created map '" + finalArtName + "' from image!");
                                 });
@@ -1250,7 +1288,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                         } else {
                             mapManager.createMultiBlockMapWithName("finemaps", firstFrame, finalWidth, finalHeight, finalRaster, finalArtName)
                                 .thenAccept(multiMap -> {
-                                    plugin.getServer().getScheduler().runTask(plugin, () -> {
+                                    FineMapsScheduler.runForEntity(plugin, player, () -> {
+                                        if (!player.isOnline()) return;
                                         mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
                                         player.sendMessage(ChatColor.GREEN + "Created " + finalWidth + "x" + finalHeight +
                                                           " map '" + finalArtName + "'!");
@@ -1266,7 +1305,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                         mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
                             plugin.getAnimationRegistry().registerAndStartSingleFromCache(finalArtName, map.getId(), fpsFinal, urlStr, 1, 1, finalRaster);
                             plugin.getAnimationRegistry().persistSingleDefinition(finalArtName, urlStr, 1, 1, finalRaster, fpsFinal, map.getId());
-                            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                            FineMapsScheduler.runForEntity(plugin, player, () -> {
+                                if (!player.isOnline()) return;
                                 mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
                                 player.sendMessage(ChatColor.GREEN + "Created animated map '" + finalArtName + "' (" + fpsFinal + " fps, " + cachedFrameCount + " frames)");
                             });
@@ -1278,7 +1318,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                                 List<Long> mapIds = tileOrderMapIds(multiMap, finalWidth, finalHeight);
                                 plugin.getAnimationRegistry().registerAndStartMultiFromCache(finalArtName, mapIds, finalWidth, finalHeight, fpsFinal, urlStr, finalRaster);
                                 plugin.getAnimationRegistry().persistMultiDefinition(finalArtName, urlStr, finalWidth, finalHeight, finalRaster, fpsFinal, multiMap.getGroupId());
-                                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                                    if (!player.isOnline()) return;
                                     mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
                                     player.sendMessage(ChatColor.GREEN + "Created animated " + finalWidth + "x" + finalHeight +
                                                       " map '" + finalArtName + "' (" + fpsFinal + " fps, " + cachedFrameCount + " frames)");
@@ -1286,7 +1327,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                             });
                     }
                 } catch (Exception e) {
-                    plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    FineMapsScheduler.runForEntity(plugin, player, () -> {
+                        if (!player.isOnline()) return;
                         player.sendMessage(ChatColor.RED + "Error processing image: " + e.getMessage());
                     });
                 }
@@ -1461,7 +1503,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             lastUpdateMs.set(now);
         }
         String msg = ChatColor.YELLOW + "Rasterising GIF " + ChatColor.WHITE + done + ChatColor.GRAY + " frames...";
-        plugin.getServer().getScheduler().runTask(plugin, () -> {
+        FineMapsScheduler.runForEntity(plugin, player, () -> {
             if (!player.isOnline()) return;
             sendActionBar(player, msg);
         });
@@ -1491,7 +1533,8 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         mapManager.getGroupByName("finemaps", artName).thenAccept(optGroupId -> {
             if (optGroupId.isPresent()) {
                 long groupId = optGroupId.get();
-                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                    if (!player.isOnline()) return;
                     mapManager.giveMultiBlockMapToPlayerWithName(player, groupId, artName);
                     player.sendMessage(ChatColor.GREEN + "Given map '" + artName + "'");
                 });
@@ -1500,12 +1543,14 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                 mapManager.getMapByName("finemaps", artName).thenAccept(optMapId -> {
                     if (optMapId.isPresent()) {
                         long mapId = optMapId.get();
-                        plugin.getServer().getScheduler().runTask(plugin, () -> {
+                        FineMapsScheduler.runForEntity(plugin, player, () -> {
+                            if (!player.isOnline()) return;
                             mapManager.giveMapToPlayerWithName(player, mapId, artName);
                             player.sendMessage(ChatColor.GREEN + "Given map '" + artName + "'");
                         });
                     } else {
-                        plugin.getServer().getScheduler().runTask(plugin, () -> {
+                        FineMapsScheduler.runForEntity(plugin, player, () -> {
+                            if (!player.isOnline()) return;
                             player.sendMessage(ChatColor.RED + "Map not found: " + artName);
                         });
                     }
@@ -1534,7 +1579,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             if (optGroupId.isPresent()) {
                 long groupId = optGroupId.get();
                 mapManager.deleteMultiBlockMap(groupId).thenAccept(success -> {
-                    plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    FineMapsScheduler.runSync(plugin, () -> {
                         if (success) {
                             sender.sendMessage(ChatColor.GREEN + "Deleted map '" + artName + "'");
                         } else {
@@ -1548,7 +1593,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                     if (optMapId.isPresent()) {
                         long mapId = optMapId.get();
                         mapManager.deleteMap(mapId).thenAccept(success -> {
-                            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                            FineMapsScheduler.runSync(plugin, () -> {
                                 if (success) {
                                     sender.sendMessage(ChatColor.GREEN + "Deleted map '" + artName + "'");
                                 } else {
@@ -1557,9 +1602,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                             });
                         });
                     } else {
-                        plugin.getServer().getScheduler().runTask(plugin, () -> {
-                            sender.sendMessage(ChatColor.RED + "Map not found: " + artName);
-                        });
+                        FineMapsScheduler.runSync(plugin, () -> sender.sendMessage(ChatColor.RED + "Map not found: " + artName));
                     }
                 });
             }
@@ -1577,7 +1620,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         String pluginId = args.length >= 2 ? args[1] : "finemaps";
 
         mapManager.getMapsByPlugin(pluginId).thenAccept(maps -> {
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
+            FineMapsScheduler.runSync(plugin, () -> {
                 if (maps.isEmpty()) {
                     sender.sendMessage(ChatColor.YELLOW + "No maps found for plugin: " + pluginId);
                     return;
@@ -1619,7 +1662,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
             if (optGroupId.isPresent()) {
                 long groupId = optGroupId.get();
                 mapManager.getMultiBlockMap(groupId).thenAccept(optMultiMap -> {
-                    plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    FineMapsScheduler.runSync(plugin, () -> {
                         if (!optMultiMap.isPresent()) {
                             sender.sendMessage(ChatColor.RED + "Map not found: " + artName);
                             return;
@@ -1645,7 +1688,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                     if (optMapId.isPresent()) {
                         long mapId = optMapId.get();
                         mapManager.getMap(mapId).thenAccept(optMap -> {
-                            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                            FineMapsScheduler.runSync(plugin, () -> {
                                 if (!optMap.isPresent()) {
                                     sender.sendMessage(ChatColor.RED + "Map not found: " + artName);
                                     return;
@@ -1666,9 +1709,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                             });
                         });
                     } else {
-                        plugin.getServer().getScheduler().runTask(plugin, () -> {
-                            sender.sendMessage(ChatColor.RED + "Map not found: " + artName);
-                        });
+                        FineMapsScheduler.runSync(plugin, () -> sender.sendMessage(ChatColor.RED + "Map not found: " + artName));
                     }
                 });
             }
@@ -1695,7 +1736,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         }
 
         mapManager.getMapCount("finemaps").thenAccept(count -> {
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
+            FineMapsScheduler.runSync(plugin, () -> {
                 sender.sendMessage(ChatColor.GOLD + "=== FineMaps Stats ===");
                 sender.sendMessage(ChatColor.YELLOW + "Total maps: " + ChatColor.WHITE + count);
                 sender.sendMessage(ChatColor.YELLOW + "Database type: " + ChatColor.WHITE + 
@@ -2290,7 +2331,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         String msg = ChatColor.YELLOW + "Rasterising " + ChatColor.WHITE + pct + "%" + ChatColor.DARK_GRAY +
             " [" + bar + ChatColor.DARK_GRAY + "] " + ChatColor.GRAY + done + "/" + total;
 
-        plugin.getServer().getScheduler().runTask(plugin, () -> {
+        FineMapsScheduler.runForEntity(plugin, player, () -> {
             if (!player.isOnline()) return;
             sendActionBar(player, msg);
         });

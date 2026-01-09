@@ -1,6 +1,7 @@
 package com.example.finemaps.plugin.url;
 
 import com.example.finemaps.core.manager.MapManager;
+import com.example.finemaps.core.util.FineMapsScheduler;
 import com.example.finemaps.api.nms.NMSAdapter;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.ItemFrame;
@@ -49,7 +50,7 @@ public final class AnimationRegistry {
      * than our runtime MapViewManager mapping (e.g. after restarts).
      */
     private volatile Map<Long, Map<UUID, Set<Integer>>> viewersByDbMapId = new HashMap<>();
-    private int viewerScanTaskId = -1;
+    private Object viewerScanTask = null;
 
     public AnimationRegistry(Plugin plugin, MapManager mapManager, String cacheFolderName, int frameCacheFrames) {
         this.plugin = plugin;
@@ -284,16 +285,16 @@ public final class AnimationRegistry {
     }
 
     private void ensureViewerScan() {
-        if (viewerScanTaskId != -1) return;
+        if (viewerScanTask != null) return;
         // Rebuild the viewer index periodically; this lets us push map packets for maps in item frames,
         // which otherwise update very infrequently compared to held maps.
-        viewerScanTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, this::rebuildViewerIndex, 20L, 20L);
+        viewerScanTask = FineMapsScheduler.runSyncRepeating(plugin, this::rebuildViewerIndex, 20L, 20L);
     }
 
     private void stopViewerScan() {
-        if (viewerScanTaskId != -1) {
-            Bukkit.getScheduler().cancelTask(viewerScanTaskId);
-            viewerScanTaskId = -1;
+        if (viewerScanTask != null) {
+            FineMapsScheduler.cancel(viewerScanTask);
+            viewerScanTask = null;
         }
         viewersByDbMapId = new HashMap<>();
     }
@@ -422,7 +423,7 @@ public final class AnimationRegistry {
         private final int multiHeight;
         private final List<byte[][]> multiFrames;
 
-        private int taskId = -1;
+        private Object taskHandle = null;
         private volatile boolean paused = false;
         private volatile long startEpochMs = System.currentTimeMillis();
         private volatile long offsetMs = 0L;
@@ -477,15 +478,15 @@ public final class AnimationRegistry {
         }
 
         void start() {
-            if (taskId != -1) return;
+            if (taskHandle != null) return;
             // Run every tick; we compute frame from wall-clock time to survive chunk unload/reload and plugin reload.
-            taskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, this, 1L, 1L);
+            taskHandle = FineMapsScheduler.runSyncRepeating(plugin, this, 1L, 1L);
         }
 
         void stop() {
-            if (taskId != -1) {
-                Bukkit.getScheduler().cancelTask(taskId);
-                taskId = -1;
+            if (taskHandle != null) {
+                FineMapsScheduler.cancel(taskHandle);
+                taskHandle = null;
             }
         }
 
