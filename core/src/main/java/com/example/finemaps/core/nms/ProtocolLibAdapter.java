@@ -7,11 +7,15 @@ import com.comphenix.protocol.ProtocolManager;
 import com.comphenix.protocol.events.*;
 import com.comphenix.protocol.wrappers.WrappedDataWatcher;
 import org.bukkit.*;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.MapMeta;
 
 import java.lang.reflect.Method;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Collections;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -28,6 +32,15 @@ public class ProtocolLibAdapter implements NMSAdapter {
     private final ProtocolManager protocolManager;
     private final int majorVersion;
     private final int minorVersion;
+
+    // Display entity support (ItemDisplay/BlockDisplay) - implemented via Bukkit reflection.
+    private final Class<?> itemDisplayClass;
+    private final Class<?> blockDisplayClass;
+    private final boolean hasItemDisplay;
+    private final Map<Integer, Entity> displayEntities = new ConcurrentHashMap<>();
+    private final Map<Integer, Entity> previewDisplayEntities = new ConcurrentHashMap<>();
+    private final AtomicInteger nextDisplayId = new AtomicInteger(Integer.MAX_VALUE - 1000000);
+    private final AtomicInteger nextPreviewDisplayId = new AtomicInteger(Integer.MAX_VALUE - 2000000);
     
     private PacketAdapter packetAdapter;
     private MapPacketListener mapPacketListener;
@@ -39,6 +52,30 @@ public class ProtocolLibAdapter implements NMSAdapter {
         this.protocolManager = ProtocolLibrary.getProtocolManager();
         this.majorVersion = NMSAdapterFactory.getMajorVersion();
         this.minorVersion = NMSAdapterFactory.getMinorVersion();
+
+        Class<?> item = null;
+        Class<?> block = null;
+        boolean ok = false;
+        try {
+            item = Class.forName("org.bukkit.entity.ItemDisplay");
+            ok = true;
+            try {
+                block = Class.forName("org.bukkit.entity.BlockDisplay");
+            } catch (ClassNotFoundException ignored) {
+                block = null;
+            }
+        } catch (ClassNotFoundException ignored) {
+            ok = false;
+            item = null;
+            block = null;
+        } catch (Throwable t) {
+            ok = false;
+            item = null;
+            block = null;
+        }
+        this.itemDisplayClass = item;
+        this.blockDisplayClass = block;
+        this.hasItemDisplay = ok;
     }
 
     @Override
@@ -209,20 +246,20 @@ public class ProtocolLibAdapter implements NMSAdapter {
 
     @Override
     public int spawnMapDisplay(Location location, int mapId) {
-        if (!supportsBlockDisplays()) {
+        if (!hasItemDisplay || itemDisplayClass == null || location == null) {
             return -1;
         }
-        
+
         try {
-            // Use reflection or NMS to spawn item display
-            // This is a simplified version - full implementation would handle all entity data
-            
-            // For 1.19.4+ we can use the API
-            if (majorVersion >= 20 || (majorVersion == 19 && minorVersion >= 4)) {
-                // Bukkit API for item displays (if available)
-                // This would require more specific implementation per version
-                return -1; // Placeholder - implement per-version
-            }
+            World world = location.getWorld();
+            if (world == null) return -1;
+
+            Entity entity = spawnItemDisplayReflection(world, location, mapId);
+            if (entity == null) return -1;
+
+            int id = nextDisplayId.getAndIncrement();
+            displayEntities.put(id, entity);
+            return id;
         } catch (Exception e) {
             logger.log(Level.WARNING, "Failed to spawn map display", e);
         }
@@ -232,46 +269,56 @@ public class ProtocolLibAdapter implements NMSAdapter {
 
     @Override
     public void removeDisplay(int entityId) {
-        if (entityId < 0) {
-            return;
-        }
-        
-        try {
-            // Send entity destroy packet
-            PacketContainer packet = protocolManager.createPacket(PacketType.Play.Server.ENTITY_DESTROY);
-            
-            if (majorVersion >= 17) {
-                // 1.17+ uses IntList
-                packet.getIntLists().write(0, Collections.singletonList(entityId));
-            } else {
-                packet.getIntegerArrays().write(0, new int[]{entityId});
+        Entity entity = displayEntities.remove(entityId);
+        if (entity != null) {
+            try {
+                if (entity.isValid()) {
+                    entity.remove();
+                }
+            } catch (Throwable ignored) {
             }
-            
-            for (Player player : Bukkit.getOnlinePlayers()) {
-                protocolManager.sendServerPacket(player, packet);
-            }
-        } catch (Exception e) {
-            logger.log(Level.WARNING, "Failed to remove display entity", e);
         }
     }
 
     @Override
     public boolean supportsBlockDisplays() {
-        return majorVersion >= 20 || (majorVersion == 19 && minorVersion >= 4);
+        // Prefer real capability detection (Bukkit may be newer than ProtocolLib's packet impl).
+        return hasItemDisplay && blockDisplayClass != null;
     }
 
     @Override
     public int spawnPreviewBlockDisplay(Location location, boolean valid, float scaleX, float scaleY, float scaleZ) {
-        // ProtocolLib adapter delegates to the spawnMapDisplay approach
-        // This would require packet-based entity spawning which is complex
-        // For now, return -1 to fall back to particles
-        return -1;
+        if (blockDisplayClass == null || location == null) {
+            return -1;
+        }
+
+        try {
+            World world = location.getWorld();
+            if (world == null) return -1;
+
+            Entity entity = spawnBlockDisplayReflection(world, location, valid, scaleX, scaleY, scaleZ);
+            if (entity == null) return -1;
+
+            int id = nextPreviewDisplayId.getAndIncrement();
+            previewDisplayEntities.put(id, entity);
+            return id;
+        } catch (Throwable t) {
+            logger.log(Level.FINE, "Failed to spawn preview block display", t);
+            return -1;
+        }
     }
 
     @Override
     public void removePreviewDisplay(int entityId) {
-        // Same as removeDisplay since they use the same entity destroy packet
-        removeDisplay(entityId);
+        Entity entity = previewDisplayEntities.remove(entityId);
+        if (entity != null) {
+            try {
+                if (entity.isValid()) {
+                    entity.remove();
+                }
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     @Override
@@ -363,5 +410,149 @@ public class ProtocolLibAdapter implements NMSAdapter {
         String version = Bukkit.getServer().getClass().getPackage().getName();
         version = version.substring(version.lastIndexOf('.') + 1);
         return Class.forName("org.bukkit.craftbukkit." + version + "." + name);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Entity spawnItemDisplayReflection(World world, Location location, int mapId) {
+        try {
+            // Create the item to display (mapId is the Bukkit map id)
+            ItemStack mapItem = createMapItem(mapId);
+
+            // Spawn: World#spawn(Location, Class)
+            Method simpleSpawn = World.class.getMethod("spawn", Location.class, Class.class);
+            Entity entity = (Entity) simpleSpawn.invoke(world, location, itemDisplayClass);
+
+            // Configure the display - set the item
+            try {
+                Method setItemStack = itemDisplayClass.getMethod("setItemStack", ItemStack.class);
+                setItemStack.invoke(entity, mapItem);
+            } catch (NoSuchMethodException ignored) {
+            }
+
+            // Billboard FIXED
+            try {
+                Class<?> displayClass = Class.forName("org.bukkit.entity.Display");
+                Class<?> billboardClass = Class.forName("org.bukkit.entity.Display$Billboard");
+                Method setBillboard = displayClass.getMethod("setBillboard", billboardClass);
+                Object fixedBillboard = Enum.valueOf((Class<Enum>) billboardClass, "FIXED");
+                setBillboard.invoke(entity, fixedBillboard);
+            } catch (Throwable ignored) {
+            }
+
+            // Transform FIXED (if available)
+            try {
+                Class<?> transformClass = Class.forName("org.bukkit.entity.ItemDisplay$ItemDisplayTransform");
+                Method setTransform = itemDisplayClass.getMethod("setItemDisplayTransform", transformClass);
+                Object fixedTransform = Enum.valueOf((Class<Enum>) transformClass, "FIXED");
+                setTransform.invoke(entity, fixedTransform);
+            } catch (Throwable ignored) {
+            }
+
+            // View range
+            try {
+                Class<?> displayClass = Class.forName("org.bukkit.entity.Display");
+                Method setViewRange = displayClass.getMethod("setViewRange", float.class);
+                setViewRange.invoke(entity, 64.0f);
+            } catch (Throwable ignored) {
+            }
+
+            return entity;
+        } catch (Throwable t) {
+            logger.log(Level.FINE, "Could not spawn ItemDisplay via reflection", t);
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Entity spawnBlockDisplayReflection(World world, Location location, boolean valid, float scaleX, float scaleY, float scaleZ) {
+        try {
+            Method simpleSpawn = World.class.getMethod("spawn", Location.class, Class.class);
+            Entity entity = (Entity) simpleSpawn.invoke(world, location, blockDisplayClass);
+
+            // Select material
+            Material blockMaterial;
+            if (valid) {
+                try {
+                    blockMaterial = Material.valueOf("LIME_STAINED_GLASS");
+                } catch (IllegalArgumentException e) {
+                    try {
+                        blockMaterial = Material.valueOf("LIME_CONCRETE");
+                    } catch (IllegalArgumentException e2) {
+                        blockMaterial = Material.valueOf("EMERALD_BLOCK");
+                    }
+                }
+            } else {
+                try {
+                    blockMaterial = Material.valueOf("RED_STAINED_GLASS");
+                } catch (IllegalArgumentException e) {
+                    try {
+                        blockMaterial = Material.valueOf("RED_CONCRETE");
+                    } catch (IllegalArgumentException e2) {
+                        blockMaterial = Material.valueOf("REDSTONE_BLOCK");
+                    }
+                }
+            }
+
+            // Set block data
+            try {
+                org.bukkit.block.data.BlockData blockData = blockMaterial.createBlockData();
+                Method setBlock = blockDisplayClass.getMethod("setBlock", org.bukkit.block.data.BlockData.class);
+                setBlock.invoke(entity, blockData);
+            } catch (Throwable ignored) {
+            }
+
+            // Billboard FIXED
+            try {
+                Class<?> displayClass = Class.forName("org.bukkit.entity.Display");
+                Class<?> billboardClass = Class.forName("org.bukkit.entity.Display$Billboard");
+                Method setBillboard = displayClass.getMethod("setBillboard", billboardClass);
+                Object fixedBillboard = Enum.valueOf((Class<Enum>) billboardClass, "FIXED");
+                setBillboard.invoke(entity, fixedBillboard);
+            } catch (Throwable ignored) {
+            }
+
+            // Transformation: keep centered and scaled (BlockDisplay models are in [0..1] space)
+            try {
+                Class<?> displayClass = Class.forName("org.bukkit.entity.Display");
+                Class<?> transformationClass = Class.forName("org.bukkit.util.Transformation");
+                Class<?> vector3fClass = Class.forName("org.joml.Vector3f");
+                Class<?> quaternionfClass = Class.forName("org.joml.Quaternionf");
+
+                Object scale = vector3fClass.getConstructor(float.class, float.class, float.class)
+                    .newInstance(scaleX, scaleY, scaleZ);
+                Object translation = vector3fClass.getConstructor(float.class, float.class, float.class)
+                    .newInstance(-scaleX / 2.0f, -scaleY / 2.0f, -scaleZ / 2.0f);
+                Object leftRotation = quaternionfClass.getConstructor().newInstance();
+                Object rightRotation = quaternionfClass.getConstructor().newInstance();
+
+                Object transformation = transformationClass.getConstructor(
+                    vector3fClass, quaternionfClass, vector3fClass, quaternionfClass
+                ).newInstance(translation, leftRotation, scale, rightRotation);
+
+                Method setTransformation = displayClass.getMethod("setTransformation", transformationClass);
+                setTransformation.invoke(entity, transformation);
+            } catch (Throwable ignored) {
+            }
+
+            // View range
+            try {
+                Class<?> displayClass = Class.forName("org.bukkit.entity.Display");
+                Method setViewRange = displayClass.getMethod("setViewRange", float.class);
+                setViewRange.invoke(entity, 32.0f);
+            } catch (Throwable ignored) {
+            }
+
+            // Glow for visibility
+            try {
+                Method setGlowing = Entity.class.getMethod("setGlowing", boolean.class);
+                setGlowing.invoke(entity, true);
+            } catch (Throwable ignored) {
+            }
+
+            return entity;
+        } catch (Throwable t) {
+            logger.log(Level.FINE, "Could not spawn BlockDisplay via reflection", t);
+            return null;
+        }
     }
 }
