@@ -30,11 +30,8 @@ public final class FineMapsScheduler {
     public static void runSync(Plugin plugin, Runnable runnable) {
         if (plugin == null || runnable == null) return;
 
-        if (NMSAdapterFactory.isFolia()) {
-            if (tryRunGlobal(plugin, runnable)) {
-                return;
-            }
-        }
+        // Prefer Folia's global region scheduler when available.
+        if (tryRunGlobal(plugin, runnable)) return;
 
         BukkitScheduler scheduler = Bukkit.getScheduler();
         scheduler.runTask(plugin, runnable);
@@ -49,11 +46,8 @@ public final class FineMapsScheduler {
         if (plugin == null || runnable == null) return;
         if (delayTicks < 0) delayTicks = 0;
 
-        if (NMSAdapterFactory.isFolia()) {
-            if (tryRunGlobalDelayed(plugin, runnable, delayTicks)) {
-                return;
-            }
-        }
+        // Prefer Folia's global region scheduler when available.
+        if (tryRunGlobalDelayed(plugin, runnable, delayTicks)) return;
 
         Bukkit.getScheduler().runTaskLater(plugin, runnable, delayTicks);
     }
@@ -66,11 +60,8 @@ public final class FineMapsScheduler {
     public static void runAsync(Plugin plugin, Runnable runnable) {
         if (plugin == null || runnable == null) return;
 
-        if (NMSAdapterFactory.isFolia()) {
-            if (tryRunAsyncNow(plugin, runnable)) {
-                return;
-            }
-        }
+        // Prefer Folia's async scheduler when available.
+        if (tryRunAsyncNow(plugin, runnable)) return;
 
         Bukkit.getScheduler().runTaskAsynchronously(plugin, runnable);
     }
@@ -83,11 +74,8 @@ public final class FineMapsScheduler {
     public static void runForEntity(Plugin plugin, Entity entity, Runnable runnable) {
         if (plugin == null || runnable == null) return;
 
-        if (NMSAdapterFactory.isFolia() && entity != null) {
-            if (tryRunEntity(plugin, entity, runnable)) {
-                return;
-            }
-        }
+        // Prefer Folia's per-entity scheduler when available.
+        if (entity != null && tryRunEntity(plugin, entity, runnable)) return;
 
         runSync(plugin, runnable);
     }
@@ -100,11 +88,8 @@ public final class FineMapsScheduler {
         if (plugin == null || runnable == null) return;
         if (delayTicks < 0) delayTicks = 0;
 
-        if (NMSAdapterFactory.isFolia() && entity != null) {
-            if (tryRunEntityDelayed(plugin, entity, runnable, delayTicks)) {
-                return;
-            }
-        }
+        // Prefer Folia's per-entity scheduler when available.
+        if (entity != null && tryRunEntityDelayed(plugin, entity, runnable, delayTicks)) return;
 
         runSyncDelayed(plugin, runnable, delayTicks);
     }
@@ -121,12 +106,9 @@ public final class FineMapsScheduler {
         if (initialDelayTicks < 0) initialDelayTicks = 0;
         if (periodTicks < 1) periodTicks = 1;
 
-        if (NMSAdapterFactory.isFolia()) {
-            Object handle = tryRunGlobalAtFixedRate(plugin, runnable, initialDelayTicks, periodTicks);
-            if (handle != null) {
-                return handle;
-            }
-        }
+        // Prefer Folia's global region scheduler when available.
+        Object handle = tryRunGlobalAtFixedRate(plugin, runnable, initialDelayTicks, periodTicks);
+        if (handle != null) return handle;
 
         return Bukkit.getScheduler().runTaskTimer(plugin, runnable, initialDelayTicks, periodTicks);
     }
@@ -146,11 +128,10 @@ public final class FineMapsScheduler {
         if (initialDelayTicks < 0) initialDelayTicks = 0;
         if (periodTicks < 1) periodTicks = 1;
 
-        if (NMSAdapterFactory.isFolia() && entity != null) {
+        // Prefer Folia's per-entity scheduler when available.
+        if (entity != null) {
             Object handle = tryRunEntityAtFixedRate(plugin, entity, runnable, initialDelayTicks, periodTicks);
-            if (handle != null) {
-                return handle;
-            }
+            if (handle != null) return handle;
         }
 
         return runSyncRepeating(plugin, runnable, initialDelayTicks, periodTicks);

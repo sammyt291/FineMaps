@@ -4,6 +4,7 @@ import com.example.finemaps.core.manager.MapManager;
 import com.example.finemaps.core.util.FineMapsScheduler;
 import com.example.finemaps.plugin.FineMapsPlugin;
 import org.bukkit.Chunk;
+import org.bukkit.NamespacedKey;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
@@ -12,6 +13,8 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -25,6 +28,8 @@ public class ChunkListener implements Listener {
 
     private final FineMapsPlugin plugin;
     private final MapManager mapManager;
+    private final NamespacedKey placedKey;
+    private final NamespacedKey groupIdKey;
     
     // Track chunks being processed to prevent loops
     private final Set<String> processingChunks = new HashSet<>();
@@ -32,6 +37,8 @@ public class ChunkListener implements Listener {
     public ChunkListener(FineMapsPlugin plugin) {
         this.plugin = plugin;
         this.mapManager = plugin.getMapManager();
+        this.placedKey = new NamespacedKey(plugin, "finemaps_placed");
+        this.groupIdKey = new NamespacedKey(plugin, "finemaps_group");
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -76,6 +83,11 @@ public class ChunkListener implements Listener {
                     ItemStack item = frame.getItem();
 
                     if (item != null && mapManager.isStoredMap(item)) {
+                        // Migration/repair: older FineMaps versions marked spawned frames as "fixed",
+                        // which makes them unbreakable (players can't pick the map back up).
+                        // If this looks like a FineMaps-managed frame, attempt to unfix it.
+                        tryUnfixFrame(frame);
+
                         // Re-bind the existing Bukkit map id in this frame after restart.
                         try {
                             mapManager.bindMapViewToItem(item);
@@ -106,5 +118,20 @@ public class ChunkListener implements Listener {
 
     private String getChunkKey(Chunk chunk) {
         return chunk.getWorld().getName() + ":" + chunk.getX() + ":" + chunk.getZ();
+    }
+
+    private void tryUnfixFrame(ItemFrame frame) {
+        if (frame == null) return;
+        try {
+            PersistentDataContainer pdc = frame.getPersistentDataContainer();
+            boolean fineMapsManaged =
+                (pdc.get(placedKey, PersistentDataType.BYTE) != null) ||
+                (pdc.get(groupIdKey, PersistentDataType.LONG) != null);
+            if (!fineMapsManaged) return;
+
+            // ItemFrame#setFixed(boolean) exists on modern APIs only; use reflection for compatibility.
+            frame.getClass().getMethod("setFixed", boolean.class).invoke(frame, false);
+        } catch (Throwable ignored) {
+        }
     }
 }

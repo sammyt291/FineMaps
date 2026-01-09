@@ -298,10 +298,8 @@ public class FineMapsPlugin extends JavaPlugin {
         };
 
         // Folia does not support Bukkit's async repeating scheduler and will throw UOE.
-        // Use Folia's schedulers when available (via reflection to keep Spigot API compileOnly).
-        if (NMSAdapterFactory.isFolia() && scheduleFoliaRepeatingTask(interval, cleanup)) {
-            return;
-        }
+        // Try Folia's schedulers first (via reflection); on non-Folia this will fail and we fall back.
+        if (scheduleFoliaRepeatingTask(interval, cleanup)) return;
 
         Bukkit.getScheduler().runTaskTimerAsynchronously(this, cleanup, interval, interval);
     }
