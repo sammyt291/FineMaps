@@ -89,7 +89,6 @@ public class FineMapsPlugin extends JavaPlugin {
         // Initialize NMS adapter
         try {
             nmsAdapter = NMSAdapterFactory.createAdapter(getLogger());
-            getLogger().info("NMS adapter initialized for version: " + nmsAdapter.getVersion());
         } catch (Exception e) {
             getLogger().log(Level.SEVERE, "Failed to initialize NMS adapter", e);
             getServer().getPluginManager().disablePlugin(this);
@@ -136,9 +135,35 @@ public class FineMapsPlugin extends JavaPlugin {
             getLogger().log(Level.WARNING, "Failed to restore persisted animations", t);
         }
         
+        // Print consolidated startup info
+        printStartupInfo();
+    }
+
+    private void printStartupInfo() {
+        String dbType = config.getDatabase().isMySQL() ? "MySQL" : "SQLite";
+        int mapCount = 0;
+        try {
+            mapCount = database.getMapCount("finemaps").join();
+        } catch (Exception ignored) {
+        }
+
+        int major = NMSAdapterFactory.getMajorVersion();
+        int minor = NMSAdapterFactory.getMinorVersion();
+        String mcVersion = "1." + major + "." + minor;
+
+        boolean isFolia = NMSAdapterFactory.isFolia();
+        boolean hasProtocolLib = NMSAdapterFactory.isProtocolLibAvailable();
+
         getLogger().info("FineMaps enabled successfully!");
-        getLogger().info("Database type: " + (config.getDatabase().isMySQL() ? "MySQL" : "SQLite"));
-        getLogger().info("Max virtual IDs: " + config.getMaps().getMaxVirtualIds());
+        getLogger().info("  DB Type: " + dbType);
+        getLogger().info("  DB map count: " + mapCount);
+        getLogger().info("  Detected MC Version: " + mcVersion);
+        getLogger().info("    Folia detected: " + (isFolia ? "Yes" : "No"));
+        if (hasProtocolLib) {
+            getLogger().info("    ProtocolLib detected: Yes");
+        } else {
+            getLogger().warning("    ProtocolLib detected: No - virtual map IDs disabled, install ProtocolLib for full functionality");
+        }
     }
 
     private boolean checkSupportedServerVersion() {
@@ -199,14 +224,7 @@ public class FineMapsPlugin extends JavaPlugin {
     }
 
     private boolean checkDependencies() {
-        // Check for ProtocolLib (optional but recommended)
-        if (getServer().getPluginManager().getPlugin("ProtocolLib") == null) {
-            getLogger().warning("ProtocolLib not found - running in basic mode without virtual ID system");
-            getLogger().warning("Install ProtocolLib for unlimited map support");
-        } else {
-            getLogger().info("ProtocolLib found - virtual ID system enabled");
-        }
-        
+        // ProtocolLib is optional; detection is logged in printStartupInfo()
         return true;
     }
 
@@ -221,7 +239,6 @@ public class FineMapsPlugin extends JavaPlugin {
                 .target(config)
                 .saveDefaults()
                 .load();
-            getLogger().info("Configuration loaded with RedLib");
         } catch (Exception e) {
             getLogger().log(Level.WARNING, "Failed to load config with RedLib, using defaults", e);
             config = new FineMapsConfig();
