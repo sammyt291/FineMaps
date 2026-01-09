@@ -2,6 +2,7 @@ package com.example.finemaps.plugin.listener;
 
 import com.example.finemaps.core.manager.MapManager;
 import com.example.finemaps.core.manager.MultiBlockMapHandler;
+import com.example.finemaps.core.util.FineMapsScheduler;
 import com.example.finemaps.plugin.FineMapsPlugin;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
@@ -109,9 +110,10 @@ public class ItemFrameListener implements Listener {
             }
 
             final Player finalPlayer = player;
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
+            // Run next tick to match legacy Bukkit scheduling and avoid event side effects.
+            FineMapsScheduler.runForEntityDelayed(plugin, frame, () -> {
                 multiBlockHandler.onPlacedSingleMapBreak(frame, finalPlayer);
-            });
+            }, 1L);
             return;
         }
         
@@ -130,9 +132,9 @@ public class ItemFrameListener implements Listener {
         
         // Break all connected frames (run on next tick to avoid concurrent modification)
         final Player finalPlayer = player;
-        plugin.getServer().getScheduler().runTask(plugin, () -> {
+        FineMapsScheduler.runForEntityDelayed(plugin, frame, () -> {
             multiBlockHandler.onMapBreak(frame, finalPlayer);
-        });
+        }, 1L);
     }
 
     @EventHandler(priority = EventPriority.HIGH)
@@ -161,9 +163,9 @@ public class ItemFrameListener implements Listener {
             }
             Player player = (damager instanceof Player) ? (Player) damager : null;
             event.setCancelled(true);
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
+            FineMapsScheduler.runForEntityDelayed(plugin, frame, () -> {
                 multiBlockHandler.onPlacedSingleMapBreak(frame, player);
-            });
+            }, 1L);
             return;
         }
         
@@ -173,9 +175,9 @@ public class ItemFrameListener implements Listener {
         Player player = (damager instanceof Player) ? (Player) damager : null;
         
         // Break all frames on next tick
-        plugin.getServer().getScheduler().runTask(plugin, () -> {
+        FineMapsScheduler.runForEntityDelayed(plugin, frame, () -> {
             multiBlockHandler.onMapBreak(frame, player);
-        });
+        }, 1L);
     }
 
     @EventHandler(priority = EventPriority.NORMAL)
@@ -231,15 +233,15 @@ public class ItemFrameListener implements Listener {
                 }
 
                 // Attempt placement using existing frames.
-                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                FineMapsScheduler.runForEntityDelayed(plugin, frame, () -> {
                     multiBlockHandler.tryPlaceMultiBlockMapIntoExistingFrames(player, frame, handItem, EquipmentSlot.HAND);
-                });
+                }, 1L);
                 return;
             }
             
             // Single map - let placement happen, then track it
             if (frameItem == null || frameItem.getType().isAir()) {
-                plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+                FineMapsScheduler.runForEntityDelayed(plugin, frame, () -> {
                     ItemStack newFrameItem = frame.getItem();
                     if (newFrameItem != null && mapManager.isStoredMap(newFrameItem)) {
                         // Apply FineMaps orientation rules for floor/ceiling frames, so placed maps are consistent.

@@ -2,6 +2,7 @@ package com.example.finemaps.plugin.listener;
 
 import com.example.finemaps.core.config.FineMapsConfig;
 import com.example.finemaps.core.manager.MapManager;
+import com.example.finemaps.core.util.FineMapsScheduler;
 import com.example.finemaps.api.nms.NMSAdapter;
 import com.example.finemaps.plugin.FineMapsPlugin;
 import org.bukkit.Location;
@@ -11,7 +12,6 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerItemHeldEvent;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -28,7 +28,7 @@ public class MapInteractListener implements Listener {
     private final FineMapsConfig config;
     
     // Track active preview tasks per player
-    private final Map<UUID, BukkitTask> previewTasks = new HashMap<>();
+    private final Map<UUID, Object> previewTasks = new HashMap<>();
     private final Map<UUID, Integer> activeDisplays = new HashMap<>();
 
     public MapInteractListener(FineMapsPlugin plugin) {
@@ -82,7 +82,7 @@ public class MapInteractListener implements Listener {
         UUID playerId = player.getUniqueId();
         
         // Create repeating task for particle outline
-        BukkitTask task = plugin.getServer().getScheduler().runTaskTimer(plugin, () -> {
+        Object task = FineMapsScheduler.runForEntityRepeating(plugin, player, () -> {
             Player p = plugin.getServer().getPlayer(playerId);
             if (p == null || !p.isOnline()) {
                 cancelPreview(playerId);
@@ -101,9 +101,9 @@ public class MapInteractListener implements Listener {
 
     private void cancelPreview(UUID playerId) {
         // Cancel particle task
-        BukkitTask task = previewTasks.remove(playerId);
+        Object task = previewTasks.remove(playerId);
         if (task != null) {
-            task.cancel();
+            FineMapsScheduler.cancel(task);
         }
         
         // Remove display entity
@@ -117,8 +117,8 @@ public class MapInteractListener implements Listener {
      * Clean up all previews on plugin disable.
      */
     public void cleanup() {
-        for (BukkitTask task : previewTasks.values()) {
-            task.cancel();
+        for (Object task : previewTasks.values()) {
+            FineMapsScheduler.cancel(task);
         }
         previewTasks.clear();
         
