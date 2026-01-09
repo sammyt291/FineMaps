@@ -780,8 +780,11 @@ public class BukkitNMSAdapter implements NMSAdapter {
 
     private void sendToastFallback(Player player, String message) {
         try {
-            player.sendTitle("", org.bukkit.ChatColor.GREEN + message, 5, 40, 10);
-        } catch (Throwable t2) {
+            player.spigot().sendMessage(
+                net.md_5.bungee.api.ChatMessageType.ACTION_BAR,
+                new net.md_5.bungee.api.chat.TextComponent(org.bukkit.ChatColor.GREEN + message)
+            );
+        } catch (Throwable t) {
             player.sendMessage(org.bukkit.ChatColor.GREEN + message);
         }
     }

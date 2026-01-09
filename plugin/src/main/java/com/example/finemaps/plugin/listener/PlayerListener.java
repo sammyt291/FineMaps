@@ -41,6 +41,11 @@ public class PlayerListener implements Listener {
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
         
+        // Check for pending map recoveries (maps from disconnected rasterizing sessions)
+        if (plugin.getPendingMapRecovery() != null) {
+            plugin.getPendingMapRecovery().onPlayerJoin(player);
+        }
+        
         // Schedule delayed task to send map data for held maps
         FineMapsScheduler.runForEntityDelayed(plugin, player, () -> {
             if (!player.isOnline()) return;

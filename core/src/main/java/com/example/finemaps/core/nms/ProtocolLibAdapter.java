@@ -494,12 +494,19 @@ public class ProtocolLibAdapter implements NMSAdapter {
             sendToastViaReflection(player, message, icon, uniqueId);
             
         } catch (Throwable t) {
-            // Fallback to title-based toast
-            try {
-                player.sendTitle("", net.md_5.bungee.api.ChatColor.GREEN + message, 5, 40, 10);
-            } catch (Throwable t2) {
-                player.sendMessage(net.md_5.bungee.api.ChatColor.GREEN + message);
-            }
+            // Fallback to action bar
+            sendToastFallback(player, message);
+        }
+    }
+
+    private void sendToastFallback(Player player, String message) {
+        try {
+            player.spigot().sendMessage(
+                net.md_5.bungee.api.ChatMessageType.ACTION_BAR,
+                new net.md_5.bungee.api.chat.TextComponent(net.md_5.bungee.api.ChatColor.GREEN + message)
+            );
+        } catch (Throwable t) {
+            player.sendMessage(net.md_5.bungee.api.ChatColor.GREEN + message);
         }
     }
 
@@ -572,12 +579,8 @@ public class ProtocolLibAdapter implements NMSAdapter {
                 );
             }
         } catch (Throwable t) {
-            logger.log(Level.FINE, "Toast via reflection failed, using title fallback", t);
-            try {
-                player.sendTitle("", net.md_5.bungee.api.ChatColor.GREEN + message, 5, 40, 10);
-            } catch (Throwable t2) {
-                player.sendMessage(net.md_5.bungee.api.ChatColor.GREEN + message);
-            }
+            logger.log(Level.FINE, "Toast via reflection failed, using action bar fallback", t);
+            sendToastFallback(player, message);
         }
     }
 

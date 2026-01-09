@@ -17,6 +17,7 @@ import com.example.finemaps.plugin.url.GifFrameStreamer;
 import com.example.finemaps.plugin.url.UrlCache;
 import com.example.finemaps.plugin.url.UrlDownloader;
 import com.example.finemaps.plugin.url.VideoDecoder;
+import com.example.finemaps.plugin.recovery.PendingMapRecovery;
 import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.chat.TextComponent;
 import net.milkbowl.vault.economy.Economy;
@@ -1192,21 +1193,12 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                             // Treat as static
                             if (finalWidth == 1 && finalHeight == 1) {
                                 mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
-                                    FineMapsScheduler.runForEntity(plugin, player, () -> {
-                                        if (!player.isOnline()) return;
-                                        mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
-                                        player.sendMessage(ChatColor.GREEN + "Created map '" + finalArtName + "' from image!");
-                                    });
+                                    giveMapOrQueueRecovery(player, map.getId(), finalArtName);
                                 });
                             } else {
                                 mapManager.createMultiBlockMapWithName("finemaps", firstFrame, finalWidth, finalHeight, finalRaster, finalArtName)
                                     .thenAccept(multiMap -> {
-                                        FineMapsScheduler.runForEntity(plugin, player, () -> {
-                                            if (!player.isOnline()) return;
-                                            mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
-                                            player.sendMessage(ChatColor.GREEN + "Created " + finalWidth + "x" + finalHeight +
-                                                " map '" + finalArtName + "'!");
-                                        });
+                                        giveMultiBlockMapOrQueueRecovery(player, multiMap.getGroupId(), finalArtName, finalWidth, finalHeight);
                                     });
                             }
                             return;
@@ -1219,11 +1211,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                             mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
                                 plugin.getAnimationRegistry().registerAndStartSingleFromCache(finalArtName, map.getId(), fpsFinal, urlStr, 1, 1, finalRaster);
                                 plugin.getAnimationRegistry().persistSingleDefinition(finalArtName, urlStr, 1, 1, finalRaster, fpsFinal, map.getId());
-                                FineMapsScheduler.runForEntity(plugin, player, () -> {
-                                    if (!player.isOnline()) return;
-                                    mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
-                                    player.sendMessage(ChatColor.GREEN + "Created animated map '" + finalArtName + "' (" + fpsFinal + " fps, " + cachedFrameCount + " frames)");
-                                });
+                                giveAnimatedMapOrQueueRecovery(player, map.getId(), -1, finalArtName, 1, 1, fpsFinal, cachedFrameCount);
                             });
                         } else {
                             mapManager.createMultiBlockMapWithName("finemaps", firstFrame, finalWidth, finalHeight, finalRaster, finalArtName)
@@ -1231,12 +1219,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                                     List<Long> mapIds = tileOrderMapIds(multiMap, finalWidth, finalHeight);
                                     plugin.getAnimationRegistry().registerAndStartMultiFromCache(finalArtName, mapIds, finalWidth, finalHeight, fpsFinal, urlStr, finalRaster);
                                     plugin.getAnimationRegistry().persistMultiDefinition(finalArtName, urlStr, finalWidth, finalHeight, finalRaster, fpsFinal, multiMap.getGroupId());
-                                    FineMapsScheduler.runForEntity(plugin, player, () -> {
-                                        if (!player.isOnline()) return;
-                                        mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
-                                        player.sendMessage(ChatColor.GREEN + "Created animated " + finalWidth + "x" + finalHeight +
-                                            " map '" + finalArtName + "' (" + fpsFinal + " fps, " + cachedFrameCount + " frames)");
-                                    });
+                                    giveAnimatedMapOrQueueRecovery(player, -1, multiMap.getGroupId(), finalArtName, finalWidth, finalHeight, fpsFinal, cachedFrameCount);
                                 });
                         }
                         return;
@@ -1281,21 +1264,12 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                         // Create static map(s)
                         if (finalWidth == 1 && finalHeight == 1) {
                             mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
-                                FineMapsScheduler.runForEntity(plugin, player, () -> {
-                                    if (!player.isOnline()) return;
-                                    mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
-                                    player.sendMessage(ChatColor.GREEN + "Created map '" + finalArtName + "' from image!");
-                                });
+                                giveMapOrQueueRecovery(player, map.getId(), finalArtName);
                             });
                         } else {
                             mapManager.createMultiBlockMapWithName("finemaps", firstFrame, finalWidth, finalHeight, finalRaster, finalArtName)
                                 .thenAccept(multiMap -> {
-                                    FineMapsScheduler.runForEntity(plugin, player, () -> {
-                                        if (!player.isOnline()) return;
-                                        mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
-                                        player.sendMessage(ChatColor.GREEN + "Created " + finalWidth + "x" + finalHeight +
-                                                          " map '" + finalArtName + "'!");
-                                    });
+                                    giveMultiBlockMapOrQueueRecovery(player, multiMap.getGroupId(), finalArtName, finalWidth, finalHeight);
                                 });
                         }
                         return;
@@ -1307,11 +1281,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                         mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
                             plugin.getAnimationRegistry().registerAndStartSingleFromCache(finalArtName, map.getId(), fpsFinal, urlStr, 1, 1, finalRaster);
                             plugin.getAnimationRegistry().persistSingleDefinition(finalArtName, urlStr, 1, 1, finalRaster, fpsFinal, map.getId());
-                            FineMapsScheduler.runForEntity(plugin, player, () -> {
-                                if (!player.isOnline()) return;
-                                mapManager.giveMapToPlayerWithName(player, map.getId(), finalArtName);
-                                player.sendMessage(ChatColor.GREEN + "Created animated map '" + finalArtName + "' (" + fpsFinal + " fps, " + cachedFrameCount + " frames)");
-                            });
+                            giveAnimatedMapOrQueueRecovery(player, map.getId(), -1, finalArtName, 1, 1, fpsFinal, cachedFrameCount);
                         });
                     } else {
                         final int fpsFinal = effectiveFps;
@@ -1320,12 +1290,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                                 List<Long> mapIds = tileOrderMapIds(multiMap, finalWidth, finalHeight);
                                 plugin.getAnimationRegistry().registerAndStartMultiFromCache(finalArtName, mapIds, finalWidth, finalHeight, fpsFinal, urlStr, finalRaster);
                                 plugin.getAnimationRegistry().persistMultiDefinition(finalArtName, urlStr, finalWidth, finalHeight, finalRaster, fpsFinal, multiMap.getGroupId());
-                                FineMapsScheduler.runForEntity(plugin, player, () -> {
-                                    if (!player.isOnline()) return;
-                                    mapManager.giveMultiBlockMapToPlayerWithName(player, multiMap.getGroupId(), finalArtName);
-                                    player.sendMessage(ChatColor.GREEN + "Created animated " + finalWidth + "x" + finalHeight +
-                                                      " map '" + finalArtName + "' (" + fpsFinal + " fps, " + cachedFrameCount + " frames)");
-                                });
+                                giveAnimatedMapOrQueueRecovery(player, -1, multiMap.getGroupId(), finalArtName, finalWidth, finalHeight, fpsFinal, cachedFrameCount);
                             });
                     }
                 } catch (Exception e) {
@@ -2404,5 +2369,72 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
         List<Long> out = new ArrayList<>();
         for (long id : ids) out.add(id);
         return out;
+    }
+
+    /**
+     * Gives a single map to a player, or queues for recovery if player is offline.
+     */
+    private void giveMapOrQueueRecovery(Player player, long mapId, String artName) {
+        FineMapsScheduler.runForEntity(plugin, player, () -> {
+            if (player.isOnline()) {
+                mapManager.giveMapToPlayerWithName(player, mapId, artName);
+                player.sendMessage(ChatColor.GREEN + "Created map '" + artName + "' from image!");
+            } else {
+                // Player disconnected, queue for recovery
+                queueForRecovery(player, artName, mapId, -1, 1, 1);
+            }
+        });
+    }
+
+    /**
+     * Gives a multi-block map to a player, or queues for recovery if player is offline.
+     */
+    private void giveMultiBlockMapOrQueueRecovery(Player player, long groupId, String artName, int width, int height) {
+        FineMapsScheduler.runForEntity(plugin, player, () -> {
+            if (player.isOnline()) {
+                mapManager.giveMultiBlockMapToPlayerWithName(player, groupId, artName);
+                player.sendMessage(ChatColor.GREEN + "Created " + width + "x" + height + " map '" + artName + "'!");
+            } else {
+                // Player disconnected, queue for recovery
+                queueForRecovery(player, artName, -1, groupId, width, height);
+            }
+        });
+    }
+
+    /**
+     * Gives an animated map to a player, or queues for recovery if player is offline.
+     */
+    private void giveAnimatedMapOrQueueRecovery(Player player, long mapId, long groupId, String artName, 
+                                                 int width, int height, int fps, int frameCount) {
+        FineMapsScheduler.runForEntity(plugin, player, () -> {
+            if (player.isOnline()) {
+                if (mapId > 0) {
+                    mapManager.giveMapToPlayerWithName(player, mapId, artName);
+                    player.sendMessage(ChatColor.GREEN + "Created animated map '" + artName + "' (" + fps + " fps, " + frameCount + " frames)");
+                } else if (groupId > 0) {
+                    mapManager.giveMultiBlockMapToPlayerWithName(player, groupId, artName);
+                    player.sendMessage(ChatColor.GREEN + "Created animated " + width + "x" + height + 
+                        " map '" + artName + "' (" + fps + " fps, " + frameCount + " frames)");
+                }
+            } else {
+                // Player disconnected, queue for recovery
+                queueForRecovery(player, artName, mapId, groupId, width, height);
+            }
+        });
+    }
+
+    /**
+     * Queues a map for recovery when the player next logs in.
+     */
+    private void queueForRecovery(Player player, String artName, long mapId, long groupId, int width, int height) {
+        PendingMapRecovery recovery = plugin.getPendingMapRecovery();
+        if (recovery == null) return;
+
+        if (mapId > 0) {
+            recovery.addPendingSingleMap(player.getUniqueId(), artName, mapId);
+        } else if (groupId > 0) {
+            recovery.addPendingMultiBlockMap(player.getUniqueId(), artName, groupId, width, height);
+        }
+        plugin.getLogger().info("Queued map '" + artName + "' for recovery for player " + player.getName());
     }
 }

@@ -13,6 +13,7 @@ import com.example.finemaps.core.nms.NMSAdapterFactory;
 import com.example.finemaps.core.util.FineMapsScheduler;
 import com.example.finemaps.plugin.command.DebugCommand;
 import com.example.finemaps.plugin.command.FineMapsCommand;
+import com.example.finemaps.plugin.recovery.PendingMapRecovery;
 import com.example.finemaps.plugin.url.AnimationRegistry;
 import com.example.finemaps.plugin.listener.ChunkListener;
 import com.example.finemaps.plugin.listener.ItemFrameListener;
@@ -55,6 +56,7 @@ public class FineMapsPlugin extends JavaPlugin {
     private ConfigManager configManager;
     private Economy economy;
     private AnimationRegistry animationRegistry;
+    private PendingMapRecovery pendingMapRecovery;
     private final Set<UUID> debugPlayers = ConcurrentHashMap.newKeySet();
 
     @Override
@@ -106,6 +108,9 @@ public class FineMapsPlugin extends JavaPlugin {
         } catch (Throwable ignored) {
         }
         animationRegistry = new AnimationRegistry(this, mapManager, cacheFolder, animCacheFrames);
+
+        // Initialize pending map recovery system
+        pendingMapRecovery = new PendingMapRecovery(this, mapManager);
 
         // Hook Vault (optional, only used if enabled in config)
         setupEconomy();
@@ -175,6 +180,11 @@ public class FineMapsPlugin extends JavaPlugin {
         // Save multi-block data
         if (multiBlockHandler != null) {
             multiBlockHandler.save();
+        }
+
+        // Save pending map recovery data
+        if (pendingMapRecovery != null) {
+            pendingMapRecovery.save();
         }
         
         // Close database
@@ -340,6 +350,15 @@ public class FineMapsPlugin extends JavaPlugin {
 
     public AnimationRegistry getAnimationRegistry() {
         return animationRegistry;
+    }
+
+    /**
+     * Gets the pending map recovery manager.
+     *
+     * @return The pending map recovery manager
+     */
+    public PendingMapRecovery getPendingMapRecovery() {
+        return pendingMapRecovery;
     }
 
     /**
