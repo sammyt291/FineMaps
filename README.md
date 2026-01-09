@@ -185,7 +185,7 @@ All debug subcommands require `finemaps.admin`:
 ### Getting the API
 
 ```java
-import com.example.finemaps.api.FineMapsAPI;
+import org.finetree.finemaps.api.FineMapsAPI;
 
 FineMapsAPI api = FineMapsAPI.getInstance();
 if (api != null) {
@@ -291,7 +291,7 @@ Large images can be split into multiple 128x128 maps:
 ## Building from Source
 
 ```bash
-git clone https://github.com/example/finemaps.git
+git clone https://github.com/finetree/finemaps.git
 cd finemaps
 ./gradlew build
 ```

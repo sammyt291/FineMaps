@@ -1,0 +1,1074 @@
+package org.finetree.finemaps.core.manager;
+
+import org.finetree.finemaps.api.FineMapsAPI;
+import org.finetree.finemaps.api.event.MapCreateEvent;
+import org.finetree.finemaps.api.event.MapDeleteEvent;
+import org.finetree.finemaps.api.event.MapLoadEvent;
+import org.finetree.finemaps.api.map.MapData;
+import org.finetree.finemaps.api.map.ArtSummary;
+import org.finetree.finemaps.api.map.MultiBlockMap;
+import org.finetree.finemaps.api.map.StoredMap;
+import org.finetree.finemaps.core.config.FineMapsConfig;
+import org.finetree.finemaps.core.database.DatabaseProvider;
+import org.finetree.finemaps.core.image.ImageProcessor;
+import org.finetree.finemaps.api.nms.NMSAdapter;
+import org.finetree.finemaps.core.render.MapViewManager;
+import org.finetree.finemaps.core.util.FineMapsScheduler;
+import org.bukkit.Bukkit;
+import org.bukkit.NamespacedKey;
+import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemFlag;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.MapMeta;
+import org.bukkit.map.MapView;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.plugin.Plugin;
+
+import java.awt.image.BufferedImage;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+/**
+ * Main manager for map operations.
+ * Coordinates database, virtual IDs, and NMS operations.
+ */
+public class MapManager implements FineMapsAPI {
+
+    private final Plugin plugin;
+    private final Logger logger;
+    private final FineMapsConfig config;
+    private final DatabaseProvider database;
+    private final NMSAdapter nmsAdapter;
+    private final MapViewManager mapViewManager;
+    private final ImageProcessor imageProcessor;
+
+    // Cache of loaded maps
+    private final Map<Long, MapData> mapDataCache = new ConcurrentHashMap<>();
+    
+    // Track which maps are loaded for each player
+    private final Map<UUID, Set<Long>> playerLoadedMaps = new ConcurrentHashMap<>();
+    
+    // NBT key for storing our map ID
+    private final NamespacedKey mapIdKey;
+    private final NamespacedKey groupIdKey;
+    private final NamespacedKey widthKey;
+    private final NamespacedKey heightKey;
+    private final NamespacedKey rotationKey;
+    
+    // Track chunk loading to prevent loops
+    private final Set<String> processingChunks = Collections.newSetFromMap(new ConcurrentHashMap<>());
+
+    private static final class CachedArts {
+        volatile List<ArtSummary> arts = Collections.emptyList();
+        volatile long lastRefreshMs = 0L;
+        final AtomicBoolean refreshing = new AtomicBoolean(false);
+    }
+
+    private final Map<String, CachedArts> artCacheByPlugin = new ConcurrentHashMap<>();
+    private final long artCacheTtlMs = 5000L;
+
+    public MapManager(Plugin plugin, FineMapsConfig config, DatabaseProvider database, 
+                      NMSAdapter nmsAdapter) {
+        this.plugin = plugin;
+        this.logger = plugin.getLogger();
+        this.config = config;
+        this.database = database;
+        this.nmsAdapter = nmsAdapter;
+        this.mapViewManager = new MapViewManager(plugin);
+        this.imageProcessor = new ImageProcessor(
+            config.getImages().getConnectionTimeout(),
+            config.getImages().getReadTimeout(),
+            config.getPermissions().getMaxImportSize()
+        );
+        this.mapIdKey = new NamespacedKey(plugin, "finemaps_id");
+        this.groupIdKey = new NamespacedKey(plugin, "finemaps_group");
+        this.widthKey = new NamespacedKey(plugin, "finemaps_width");
+        this.heightKey = new NamespacedKey(plugin, "finemaps_height");
+        this.rotationKey = new NamespacedKey(plugin, "finemaps_rotation");
+    }
+
+    /**
+     * Gets or creates a proper Bukkit MapView for the given map ID.
+     * This ensures the map will render correctly in item frames and player hands.
+     *
+     * @param dbMapId The database map ID
+     * @return The Bukkit map ID
+     */
+    private int getOrCreateBukkitMapId(long dbMapId) {
+        // Check if we already have a Bukkit map for this
+        int existingId = mapViewManager.getBukkitMapId(dbMapId);
+        if (existingId != -1) {
+            return existingId;
+        }
+        
+        // Check cache first for pixel data
+        MapData cached = mapDataCache.get(dbMapId);
+        if (cached != null) {
+            return mapViewManager.getOrCreateBukkitMapId(dbMapId, cached.getPixelsUnsafe());
+        }
+        
+        // Create with lazy loading - will load pixels when first rendered
+        return mapViewManager.getOrCreateBukkitMapId(dbMapId, () -> {
+            // Try cache again (might have been populated by another call)
+            MapData cachedData = mapDataCache.get(dbMapId);
+            if (cachedData != null) {
+                return cachedData.getPixelsUnsafe();
+            }
+            
+            // Load from database synchronously (called during render)
+            try {
+                Optional<MapData> optData = database.getMapData(dbMapId).join();
+                if (optData.isPresent()) {
+                    mapDataCache.put(dbMapId, optData.get());
+                    return optData.get().getPixelsUnsafe();
+                }
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "Failed to load map data for " + dbMapId, e);
+            }
+            
+            // Return blank map on failure
+            return new byte[MapData.TOTAL_PIXELS];
+        });
+    }
+
+    /**
+     * Ensures that the Bukkit MapView referenced by an existing ItemStack is bound to our renderer.
+     * <p>
+     * After server restart, stored map items in item frames still reference the original Bukkit map id,
+     * but FineMaps' in-memory MapView/renderer mappings are empty. This method re-attaches our renderer
+     * to the existing MapView so clients can see the map again without re-placing the item.
+     *
+     * This should be called on the main thread (it mutates MapView renderers).
+     */
+    public void bindMapViewToItem(ItemStack item) {
+        if (item == null) return;
+        if (!isStoredMap(item)) return;
+
+        long dbMapId = getMapIdFromItem(item);
+        if (dbMapId <= 0) return;
+
+        int bukkitMapId = nmsAdapter.getMapId(item);
+        if (bukkitMapId < 0) return;
+
+        // Bind the exact Bukkit map id this item references.
+        mapViewManager.bindExistingBukkitMapId(dbMapId, bukkitMapId, () -> {
+            MapData cachedData = mapDataCache.get(dbMapId);
+            if (cachedData != null) {
+                return cachedData.getPixelsUnsafe();
+            }
+            try {
+                Optional<MapData> optData = database.getMapData(dbMapId).join();
+                if (optData.isPresent()) {
+                    mapDataCache.put(dbMapId, optData.get());
+                    return optData.get().getPixelsUnsafe();
+                }
+            } catch (Exception e) {
+                logger.log(Level.WARNING, "Failed to load map data for " + dbMapId, e);
+            }
+            return new byte[MapData.TOTAL_PIXELS];
+        });
+    }
+
+    /**
+     * Ensures a map's pixel data is loaded and the MapView is initialized.
+     *
+     * @param dbMapId The database map ID
+     * @param pixels The pixel data to use
+     */
+    private void ensureMapInitialized(long dbMapId, byte[] pixels) {
+        mapDataCache.put(dbMapId, new MapData(dbMapId, pixels));
+        mapViewManager.getOrCreateBukkitMapId(dbMapId, pixels);
+    }
+
+    /**
+     * Updates a map's pixels in-memory and pushes them to the renderer.
+     * This does NOT persist the new pixels to the database.
+     *
+     * Intended for runtime animation workflows.
+     */
+    public void updateMapPixelsRuntime(long dbMapId, byte[] pixels) {
+        if (pixels == null || pixels.length != MapData.TOTAL_PIXELS) return;
+        mapDataCache.put(dbMapId, new MapData(dbMapId, pixels));
+        mapViewManager.updateMapPixels(dbMapId, pixels);
+    }
+
+    @Override
+    public CompletableFuture<StoredMap> createMap(String pluginId, byte[] pixels) {
+        return database.createMap(pluginId, null, pixels, null, 0, 0, 0, null);
+    }
+
+    /**
+     * Creates a map directly from raw 128x128 pixel bytes with an optional art name.
+     * Intended for import workflows (e.g. importing vanilla maps).
+     *
+     * @param pluginId The plugin ID namespace
+     * @param pixels The pixel data (128x128 = 16384 bytes)
+     * @param artName Optional art name to store as metadata
+     * @return CompletableFuture containing the created map
+     */
+    public CompletableFuture<StoredMap> createMapWithName(String pluginId, byte[] pixels, String artName) {
+        return database.createMap(pluginId, null, pixels, null, 0, 0, 0, artName);
+    }
+
+    @Override
+    public CompletableFuture<StoredMap> createMapFromImage(String pluginId, BufferedImage image, boolean dither) {
+        byte[] pixels = imageProcessor.processSingleMap(image, dither);
+        return createMap(pluginId, pixels);
+    }
+
+    /**
+     * Creates a map from an image with an art name.
+     *
+     * @param pluginId The plugin ID
+     * @param image The image
+     * @param dither Whether to use dithering
+     * @param artName The art name to store as metadata
+     * @return CompletableFuture containing the created map
+     */
+    public CompletableFuture<StoredMap> createMapFromImageWithName(String pluginId, BufferedImage image, 
+                                                                     boolean dither, String artName) {
+        byte[] pixels = imageProcessor.processSingleMap(image, dither);
+        return database.createMap(pluginId, null, pixels, null, 0, 0, 0, artName);
+    }
+
+    @Override
+    public CompletableFuture<MultiBlockMap> createMultiBlockMap(String pluginId, BufferedImage image,
+                                                                  int widthBlocks, int heightBlocks, boolean dither) {
+        return createMultiBlockMapWithName(pluginId, image, widthBlocks, heightBlocks, dither, null);
+    }
+
+    /**
+     * Creates a multi-block map with an art name.
+     *
+     * @param pluginId The plugin ID
+     * @param image The image
+     * @param widthBlocks Width in blocks
+     * @param heightBlocks Height in blocks
+     * @param dither Whether to use dithering
+     * @param artName The art name to store as metadata
+     * @return CompletableFuture containing the created multi-block map
+     */
+    public CompletableFuture<MultiBlockMap> createMultiBlockMapWithName(String pluginId, BufferedImage image,
+                                                                          int widthBlocks, int heightBlocks, 
+                                                                          boolean dither, String artName) {
+        return CompletableFuture.supplyAsync(() -> {
+            byte[][] pixelArrays = imageProcessor.processImage(image, widthBlocks, heightBlocks, dither);
+            return pixelArrays;
+        }).thenCompose(pixelArrays -> {
+            // Create group first with art name as metadata
+            return database.createMultiBlockGroup(pluginId, null, widthBlocks, heightBlocks, artName)
+                .thenCompose(groupId -> {
+                    // Create all maps in the group
+                    List<CompletableFuture<StoredMap>> mapFutures = new ArrayList<>();
+                    
+                    for (int y = 0; y < heightBlocks; y++) {
+                        for (int x = 0; x < widthBlocks; x++) {
+                            int index = y * widthBlocks + x;
+                            byte[] pixels = pixelArrays[index];
+                            
+                            CompletableFuture<StoredMap> mapFuture = database.createMap(
+                                pluginId, null, pixels, null, groupId, x, y, null
+                            );
+                            mapFutures.add(mapFuture);
+                        }
+                    }
+                    
+                    // Wait for all maps to be created
+                    return CompletableFuture.allOf(mapFutures.toArray(new CompletableFuture[0]))
+                        .thenApply(v -> {
+                            List<StoredMap> maps = new ArrayList<>();
+                            for (CompletableFuture<StoredMap> f : mapFutures) {
+                                maps.add(f.join());
+                            }
+                            return new MultiBlockMap(groupId, pluginId, null, 
+                                                    widthBlocks, heightBlocks, maps, 
+                                                    System.currentTimeMillis(), artName);
+                        });
+                });
+        });
+    }
+
+    @Override
+    public CompletableFuture<Optional<StoredMap>> getMap(long mapId) {
+        return database.getMap(mapId);
+    }
+
+    @Override
+    public CompletableFuture<Optional<MultiBlockMap>> getMultiBlockMap(long groupId) {
+        return database.getMultiBlockMap(groupId);
+    }
+
+    @Override
+    public CompletableFuture<List<StoredMap>> getMapsByPlugin(String pluginId) {
+        return database.getMapsByPlugin(pluginId);
+    }
+
+    @Override
+    public CompletableFuture<Boolean> deleteMap(long mapId) {
+        // Clear from cache and release MapView
+        mapDataCache.remove(mapId);
+        mapViewManager.releaseMap(mapId);
+        
+        return database.deleteMap(mapId);
+    }
+
+    @Override
+    public CompletableFuture<Boolean> deleteMultiBlockMap(long groupId) {
+        // Clear all maps in group from cache
+        return database.getMapsByGroup(groupId).thenCompose(maps -> {
+            for (StoredMap map : maps) {
+                mapDataCache.remove(map.getId());
+                mapViewManager.releaseMap(map.getId());
+            }
+            return database.deleteMultiBlockGroup(groupId);
+        });
+    }
+
+    @Override
+    public CompletableFuture<Boolean> updateMapPixels(long mapId, byte[] pixels) {
+        // Update cache
+        mapDataCache.put(mapId, new MapData(mapId, pixels));
+        
+        // Update the MapView renderer
+        mapViewManager.updateMapPixels(mapId, pixels);
+        
+        return database.updateMapPixels(mapId, pixels);
+    }
+
+    @Override
+    public CompletableFuture<Optional<MapData>> getMapData(long mapId) {
+        // Check cache first
+        MapData cached = mapDataCache.get(mapId);
+        if (cached != null) {
+            return CompletableFuture.completedFuture(Optional.of(cached));
+        }
+        
+        return database.getMapData(mapId).thenApply(opt -> {
+            opt.ifPresent(data -> mapDataCache.put(mapId, data));
+            return opt;
+        });
+    }
+
+    @Override
+    public ItemStack createMapItem(long mapId) {
+        // Get or create a proper Bukkit map for this database ID
+        int bukkitMapId = getOrCreateBukkitMapId(mapId);
+        
+        // Create the map item using NMS adapter
+        ItemStack item = nmsAdapter.createMapItem(bukkitMapId);
+        
+        // Store our database map ID in NBT so we can identify it later
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null) {
+            PersistentDataContainer pdc = meta.getPersistentDataContainer();
+            pdc.set(mapIdKey, PersistentDataType.LONG, mapId);
+            item.setItemMeta(meta);
+        }
+        
+        return item;
+    }
+
+    /**
+     * Creates a map item with an art name displayed.
+     *
+     * @param mapId The map ID
+     * @param artName The art name to display (or null for no name)
+     * @return The map ItemStack
+     */
+    public ItemStack createMapItemWithName(long mapId, String artName) {
+        ItemStack item = createMapItem(mapId);
+        
+        if (artName != null && !artName.isEmpty()) {
+            ItemMeta meta = item.getItemMeta();
+            if (meta != null) {
+                meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map: " + artName);
+                List<String> lore = new ArrayList<>();
+                lore.add(org.bukkit.ChatColor.GRAY + "Size: 1x1");
+                meta.setLore(lore);
+                hideVanillaMapTooltip(meta);
+                item.setItemMeta(meta);
+            }
+        }
+        
+        return item;
+    }
+
+    @Override
+    public ItemStack[][] createMultiBlockMapItems(long groupId) {
+        Optional<MultiBlockMap> optMap = getMultiBlockMap(groupId).join();
+        if (!optMap.isPresent()) {
+            return new ItemStack[0][0];
+        }
+        
+        MultiBlockMap multiMap = optMap.get();
+        ItemStack[][] items = new ItemStack[multiMap.getHeight()][multiMap.getWidth()];
+        
+        for (StoredMap map : multiMap.getMaps()) {
+            ItemStack item = createMapItem(map.getId());
+            
+            // Add group ID to item
+            ItemMeta meta = item.getItemMeta();
+            if (meta != null) {
+                PersistentDataContainer pdc = meta.getPersistentDataContainer();
+                pdc.set(groupIdKey, PersistentDataType.LONG, groupId);
+                item.setItemMeta(meta);
+            }
+            
+            items[map.getGridY()][map.getGridX()] = item;
+        }
+        
+        return items;
+    }
+
+    @Override
+    public void giveMapToPlayer(Player player, long mapId) {
+        giveMapToPlayerWithName(player, mapId, null);
+    }
+
+    /**
+     * Gives a map item to a player with an art name displayed.
+     *
+     * @param player The player
+     * @param mapId The map ID
+     * @param artName The art name to display (or null to use default)
+     */
+    public void giveMapToPlayerWithName(Player player, long mapId, String artName) {
+        // Ensure map data is loaded first
+        getMapData(mapId).thenAccept(optData -> {
+            FineMapsScheduler.runForEntity(plugin, player, () -> {
+                // Create the map item (this will also initialize the MapView)
+                ItemStack item = createMapItem(mapId);
+                
+                // Add art name to display if provided
+                if (artName != null) {
+                    ItemMeta meta = item.getItemMeta();
+                    if (meta != null) {
+                        meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map: " + artName);
+                        List<String> lore = new ArrayList<>();
+                        lore.add(org.bukkit.ChatColor.GRAY + "Size: 1x1");
+                        meta.setLore(lore);
+                        hideVanillaMapTooltip(meta);
+                        item.setItemMeta(meta);
+                    }
+                }
+                
+                player.getInventory().addItem(item);
+                
+                // Force update the player's inventory to refresh the item display
+                player.updateInventory();
+                
+                // Track that this player has this map
+                playerLoadedMaps.computeIfAbsent(player.getUniqueId(), k -> new HashSet<>()).add(mapId);
+                
+                // Invalidate the map for this player to force re-render
+                mapViewManager.getRenderer(mapId).ifPresent(r -> r.invalidatePlayer(player.getUniqueId()));
+            });
+        });
+    }
+
+    @Override
+    public void giveMultiBlockMapToPlayer(Player player, long groupId) {
+        giveMultiBlockMapToPlayerWithName(player, groupId, null);
+    }
+
+    /**
+     * Gives a multi-block map item to a player with an art name displayed.
+     *
+     * @param player The player
+     * @param groupId The group ID
+     * @param artName The art name to display (or null to use default)
+     */
+    public void giveMultiBlockMapToPlayerWithName(Player player, long groupId, String artName) {
+        // Pre-load all map data first, then give the item
+        getMultiBlockMap(groupId).thenAccept(optMap -> {
+            if (!optMap.isPresent()) {
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                    player.sendMessage(org.bukkit.ChatColor.RED + "Map group not found!");
+                });
+                return;
+            }
+            
+            MultiBlockMap multiMap = optMap.get();
+            
+            // Use art name from metadata if not provided
+            String displayName = artName != null ? artName : multiMap.getMetadata();
+            
+            // Load all individual maps' pixel data
+            List<CompletableFuture<Void>> loadFutures = new ArrayList<>();
+            for (StoredMap map : multiMap.getMaps()) {
+                CompletableFuture<Void> future = getMapData(map.getId()).thenAccept(data -> {
+                    // This loads the data into cache
+                });
+                loadFutures.add(future);
+            }
+            
+            // Wait for all to load, then give item on main thread
+            final String finalDisplayName = displayName;
+            CompletableFuture.allOf(loadFutures.toArray(new CompletableFuture[0])).thenRun(() -> {
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                    // Create the multi-block map item with name
+                    ItemStack item = createMultiBlockMapItemWithName(groupId, finalDisplayName);
+                    if (item != null) {
+                        player.getInventory().addItem(item);
+                        player.updateInventory();
+                        
+                        // Track maps for this player
+                        for (StoredMap map : multiMap.getMaps()) {
+                            playerLoadedMaps.computeIfAbsent(player.getUniqueId(), k -> new HashSet<>()).add(map.getId());
+                            
+                            // Invalidate renderer for this player to force re-render
+                            mapViewManager.getRenderer(map.getId()).ifPresent(r -> r.invalidatePlayer(player.getUniqueId()));
+                        }
+                    }
+                });
+            });
+        });
+    }
+    
+    /**
+     * Creates a single item representing an entire multi-block map.
+     * Also ensures all component maps are initialized with their MapViews.
+     *
+     * @param groupId The group ID
+     * @return The item, or null if not found
+     */
+    public ItemStack createMultiBlockMapItem(long groupId) {
+        return createMultiBlockMapItemWithName(groupId, null);
+    }
+
+    /**
+     * Creates a single item representing an entire multi-block map with an art name.
+     *
+     * @param groupId The group ID
+     * @param artName The art name to display (or null to use metadata)
+     * @return The item, or null if not found
+     */
+    public ItemStack createMultiBlockMapItemWithName(long groupId, String artName) {
+        Optional<MultiBlockMap> optMap = getMultiBlockMap(groupId).join();
+        if (!optMap.isPresent()) {
+            return null;
+        }
+        
+        MultiBlockMap multiMap = optMap.get();
+        
+        // Use art name from parameter or fall back to metadata
+        String displayName = artName != null ? artName : multiMap.getMetadata();
+        
+        // Initialize MapViews for ALL maps in the group (so they render when placed)
+        for (StoredMap map : multiMap.getMaps()) {
+            // Load pixel data and create MapView
+            getMapData(map.getId()).thenAccept(optData -> {
+                optData.ifPresent(data -> {
+                    // This ensures the MapView is created
+                    getOrCreateBukkitMapId(map.getId());
+                });
+            });
+        }
+        
+        // Use the first map (top-left, 0,0) as the display item
+        StoredMap firstMap = multiMap.getMapAt(0, 0);
+        if (firstMap == null && !multiMap.getMaps().isEmpty()) {
+            firstMap = multiMap.getMaps().get(0);
+        }
+        if (firstMap == null) {
+            return null;
+        }
+        
+        ItemStack item = createMapItem(firstMap.getId());
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null) {
+            PersistentDataContainer pdc = meta.getPersistentDataContainer();
+            
+            // Store group ID and dimensions
+            pdc.set(groupIdKey, PersistentDataType.LONG, groupId);
+            pdc.set(widthKey, PersistentDataType.INTEGER, multiMap.getWidth());
+            pdc.set(heightKey, PersistentDataType.INTEGER, multiMap.getHeight());
+            pdc.set(rotationKey, PersistentDataType.INTEGER, 0);
+            
+            // Set display name showing only the art name (size stays in lore)
+            if (displayName != null) {
+                meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map: " + displayName);
+            } else {
+                meta.setDisplayName(org.bukkit.ChatColor.GOLD + "Map");
+            }
+            
+            applyMultiBlockLore(meta, multiMap.getWidth(), multiMap.getHeight(), 0, true);
+            
+            item.setItemMeta(meta);
+        }
+        
+        return item;
+    }
+
+    /**
+     * Hides the vanilla map tooltip ("default lore") where supported.
+     * Uses reflection / dynamic enum lookup to keep compatibility across server versions.
+     */
+    void hideVanillaMapTooltip(ItemMeta meta) {
+        if (meta == null) {
+            return;
+        }
+
+        // Always available: hide generic attribute lines
+        try {
+            meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
+        } catch (Throwable ignored) {
+            // Best-effort on older forks/APIs
+        }
+
+        // 1.20.5+ (and some forks): hides extra item tooltip lines (used by maps among others)
+        try {
+            meta.addItemFlags(ItemFlag.valueOf("HIDE_ADDITIONAL_TOOLTIP"));
+        } catch (IllegalArgumentException ignored) {
+            // Not available on this API version
+        } catch (Throwable ignored) {
+            // Best-effort: don't fail item creation
+        }
+
+        // Paper/modern APIs: completely hide tooltip
+        try {
+            java.lang.reflect.Method setHideTooltip = meta.getClass().getMethod("setHideTooltip", boolean.class);
+            setHideTooltip.invoke(meta, true);
+        } catch (ReflectiveOperationException ignored) {
+            // Not available
+        } catch (Throwable ignored) {
+            // Best-effort
+        }
+    }
+    
+    /**
+     * Gets the width of a multi-block map from an item.
+     *
+     * @param item The item
+     * @return The width, or 1 if not a multi-block map
+     */
+    public int getMultiBlockWidth(ItemStack item) {
+        if (item == null) return 1;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return 1;
+        
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Integer width = pdc.get(widthKey, PersistentDataType.INTEGER);
+        return width != null ? width : 1;
+    }
+    
+    /**
+     * Gets the height of a multi-block map from an item.
+     *
+     * @param item The item
+     * @return The height, or 1 if not a multi-block map
+     */
+    public int getMultiBlockHeight(ItemStack item) {
+        if (item == null) return 1;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return 1;
+        
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Integer height = pdc.get(heightKey, PersistentDataType.INTEGER);
+        return height != null ? height : 1;
+    }
+
+    /**
+     * Gets the rotation (in degrees) of a multi-block map item.
+     * Normalized to one of: 0, 90, 180, 270.
+     */
+    public int getMultiBlockRotationDegrees(ItemStack item) {
+        if (item == null) return 0;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return 0;
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Integer rot = pdc.get(rotationKey, PersistentDataType.INTEGER);
+        return normalizeRotationDegrees(rot != null ? rot : 0);
+    }
+
+    /**
+     * Rotates a multi-block map item in-place by +90 degrees (clockwise),
+     * swapping its stored width/height and updating lore.
+     *
+     * @return true if rotation was applied
+     */
+    public boolean rotateMultiBlockItem(ItemStack item) {
+        if (item == null) return false;
+        if (getGroupIdFromItem(item) <= 0) return false;
+
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return false;
+
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Integer w = pdc.get(widthKey, PersistentDataType.INTEGER);
+        Integer h = pdc.get(heightKey, PersistentDataType.INTEGER);
+        if (w == null || h == null || w <= 0 || h <= 0) {
+            return false;
+        }
+
+        int current = getMultiBlockRotationDegrees(item);
+        int next = normalizeRotationDegrees(current + 90);
+        // swap effective dimensions every 90° turn
+        pdc.set(widthKey, PersistentDataType.INTEGER, h);
+        pdc.set(heightKey, PersistentDataType.INTEGER, w);
+        pdc.set(rotationKey, PersistentDataType.INTEGER, next);
+
+        applyMultiBlockLore(meta, h, w, next, true);
+        item.setItemMeta(meta);
+        return true;
+    }
+
+    /**
+     * Ensures a multi-block map item has up-to-date lore (size + rotation + usage hints).
+     * Useful for upgrading older items that predate rotation support.
+     */
+    public boolean ensureMultiBlockItemLore(ItemStack item) {
+        if (item == null) return false;
+        if (getGroupIdFromItem(item) <= 0) return false;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return false;
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Integer w = pdc.get(widthKey, PersistentDataType.INTEGER);
+        Integer h = pdc.get(heightKey, PersistentDataType.INTEGER);
+        if (w == null || h == null || w <= 0 || h <= 0) return false;
+
+        int rot = getMultiBlockRotationDegrees(item);
+        List<String> lore = meta.getLore();
+        boolean hasRotationLine = false;
+        if (lore != null) {
+            for (String line : lore) {
+                if (line != null && line.contains("Rotation:")) {
+                    hasRotationLine = true;
+                    break;
+                }
+            }
+        }
+        if (hasRotationLine) return false;
+
+        // Add default rotation key for older items (0°).
+        pdc.set(rotationKey, PersistentDataType.INTEGER, rot);
+        applyMultiBlockLore(meta, w, h, rot, true);
+        item.setItemMeta(meta);
+        return true;
+    }
+
+    /**
+     * Applies the standard multi-block lore, including rotation.
+     */
+    void applyMultiBlockLore(ItemMeta meta, int width, int height, int rotationDegrees, boolean includeUsageHints) {
+        if (meta == null) return;
+        int rot = normalizeRotationDegrees(rotationDegrees);
+
+        List<String> lore = new ArrayList<>();
+        lore.add(org.bukkit.ChatColor.GRAY + "Size: " + width + "x" + height + " blocks");
+        lore.add(org.bukkit.ChatColor.GRAY + "Rotation: " + rot + "\u00B0");
+        if (includeUsageHints) {
+            lore.add("");
+            lore.add(org.bukkit.ChatColor.YELLOW + "Look at a wall to see preview");
+            lore.add(org.bukkit.ChatColor.YELLOW + "Right-click to place");
+            lore.add(org.bukkit.ChatColor.YELLOW + "Sneak + Right-click to rotate");
+        }
+        meta.setLore(lore);
+        hideVanillaMapTooltip(meta);
+    }
+
+    private int normalizeRotationDegrees(int deg) {
+        int d = deg % 360;
+        if (d < 0) d += 360;
+        // snap to 90-degree increments
+        d = ((d + 45) / 90) * 90;
+        d = d % 360;
+        return d;
+    }
+
+    @Override
+    public long getMapIdFromItem(ItemStack item) {
+        if (item == null || !nmsAdapter.isFilledMap(item)) {
+            return -1;
+        }
+        
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) {
+            return -1;
+        }
+        
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Long mapId = pdc.get(mapIdKey, PersistentDataType.LONG);
+        
+        return mapId != null ? mapId : -1;
+    }
+
+    @Override
+    public boolean isStoredMap(ItemStack item) {
+        return getMapIdFromItem(item) != -1;
+    }
+
+    @Override
+    public void sendMapToPlayer(Player player, long mapId) {
+        // Track loaded maps for this player
+        playerLoadedMaps.computeIfAbsent(player.getUniqueId(), k -> new HashSet<>()).add(mapId);
+        
+        // Update last accessed
+        database.updateLastAccessed(mapId);
+        
+        // Load map data to ensure it's in cache and the MapView is initialized
+        getMapData(mapId).thenAccept(optData -> {
+            if (optData.isPresent()) {
+                MapData data = optData.get();
+                
+                // Ensure the Bukkit MapView is created with the pixel data
+                FineMapsScheduler.runForEntity(plugin, player, () -> {
+                    mapViewManager.getOrCreateBukkitMapId(mapId, data.getPixelsUnsafe());
+                    
+                    // Invalidate for this player to trigger re-render
+                    mapViewManager.getRenderer(mapId).ifPresent(r -> r.invalidatePlayer(player.getUniqueId()));
+                    
+                    // Fire event
+                    getMap(mapId).thenAccept(optMap -> {
+                        if (!optMap.isPresent()) return;
+                        FineMapsScheduler.runForEntity(plugin, player, () -> {
+                            int bukkitMapId = mapViewManager.getBukkitMapId(mapId);
+                            MapLoadEvent event = new MapLoadEvent(optMap.get(), player, bukkitMapId);
+                            Bukkit.getPluginManager().callEvent(event);
+                        });
+                    });
+                });
+            }
+        });
+    }
+
+    @Override
+    public CompletableFuture<Integer> getMapCount(String pluginId) {
+        return database.getMapCount(pluginId);
+    }
+
+    @Override
+    public boolean canCreateMaps(Player player) {
+        if (player.hasPermission("finemaps.unlimited")) {
+            return true;
+        }
+        
+        int limit = getMapLimit(player);
+        if (limit < 0) {
+            return true;
+        }
+        
+        int current = getPlayerMapCount(player).join();
+        return current < limit;
+    }
+
+    @Override
+    public int getMapLimit(Player player) {
+        if (player.hasPermission("finemaps.unlimited")) {
+            return -1;
+        }
+        
+        // Check group-specific limits
+        for (Map.Entry<String, Integer> entry : config.getPermissions().getGroupLimits().entrySet()) {
+            if (player.hasPermission("finemaps.limit." + entry.getKey())) {
+                return entry.getValue();
+            }
+        }
+        
+        return config.getPermissions().getDefaultLimit();
+    }
+
+    @Override
+    public CompletableFuture<Integer> getPlayerMapCount(Player player) {
+        return database.getMapCountByCreator(player.getUniqueId());
+    }
+
+    /**
+     * Called when a player quits to clean up their map state.
+     *
+     * @param playerUUID The player's UUID
+     */
+    public void onPlayerQuit(UUID playerUUID) {
+        // Clear player from loaded maps tracking
+        Set<Long> loadedMaps = playerLoadedMaps.remove(playerUUID);
+        
+        // Invalidate renderers for this player (so they re-render on rejoin)
+        if (loadedMaps != null) {
+            for (long mapId : loadedMaps) {
+                mapViewManager.getRenderer(mapId).ifPresent(r -> r.invalidatePlayer(playerUUID));
+            }
+        }
+    }
+
+    /**
+     * Gets the group ID from a map item.
+     *
+     * @param item The item
+     * @return The group ID, or -1 if not a group member
+     */
+    public long getGroupIdFromItem(ItemStack item) {
+        if (item == null) {
+            return -1;
+        }
+        
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) {
+            return -1;
+        }
+        
+        PersistentDataContainer pdc = meta.getPersistentDataContainer();
+        Long groupId = pdc.get(groupIdKey, PersistentDataType.LONG);
+        
+        return groupId != null ? groupId : -1;
+    }
+
+    /**
+     * Marks a chunk as being processed to prevent loops.
+     *
+     * @param chunkKey The chunk key (world:x:z)
+     * @return true if processing started, false if already processing
+     */
+    public boolean startChunkProcessing(String chunkKey) {
+        return processingChunks.add(chunkKey);
+    }
+
+    /**
+     * Marks chunk processing as complete.
+     *
+     * @param chunkKey The chunk key
+     */
+    public void endChunkProcessing(String chunkKey) {
+        processingChunks.remove(chunkKey);
+    }
+
+    /**
+     * Gets the NMS adapter.
+     *
+     * @return The NMS adapter
+     */
+    public NMSAdapter getNmsAdapter() {
+        return nmsAdapter;
+    }
+
+    /**
+     * Gets the image processor.
+     *
+     * @return The image processor
+     */
+    public ImageProcessor getImageProcessor() {
+        return imageProcessor;
+    }
+
+    /**
+     * Gets the configuration.
+     *
+     * @return The config
+     */
+    public FineMapsConfig getConfig() {
+        return config;
+    }
+
+    /**
+     * Performs cleanup operations.
+     */
+    public void cleanup() {
+        // Clean up stale cache entries
+        long staleTime = System.currentTimeMillis() - config.getMaps().getStaleTime();
+        database.getStaleMapIds(staleTime).thenAccept(staleIds -> {
+            for (Long id : staleIds) {
+                mapDataCache.remove(id);
+                // Note: We don't release MapViews here as they might still be in use
+                // MapViews are persistent in Minecraft, releasing them could cause issues
+            }
+        });
+    }
+
+    /**
+     * Shuts down the manager.
+     */
+    public void shutdown() {
+        nmsAdapter.unregisterPacketInterceptor();
+        imageProcessor.shutdown();
+        mapDataCache.clear();
+        playerLoadedMaps.clear();
+        mapViewManager.clear();
+    }
+    
+    /**
+     * Gets the MapViewManager for direct access if needed.
+     *
+     * @return The MapViewManager
+     */
+    public MapViewManager getMapViewManager() {
+        return mapViewManager;
+    }
+
+    /**
+     * Gets a multi-block map group by its art name.
+     *
+     * @param pluginId The plugin ID
+     * @param name The art name
+     * @return CompletableFuture containing the group ID if found
+     */
+    public CompletableFuture<Optional<Long>> getGroupByName(String pluginId, String name) {
+        return database.getGroupByName(pluginId, name);
+    }
+
+    /**
+     * Gets a single map by its art name.
+     *
+     * @param pluginId The plugin ID
+     * @param name The art name
+     * @return CompletableFuture containing the map ID if found
+     */
+    public CompletableFuture<Optional<Long>> getMapByName(String pluginId, String name) {
+        return database.getMapByName(pluginId, name);
+    }
+
+    /**
+     * Checks if an art name is already in use.
+     *
+     * @param pluginId The plugin ID
+     * @param name The art name to check
+     * @return CompletableFuture containing true if name exists
+     */
+    public CompletableFuture<Boolean> isNameTaken(String pluginId, String name) {
+        return database.isNameTaken(pluginId, name);
+    }
+
+    /**
+     * Gets the database provider.
+     *
+     * @return The database provider
+     */
+    public DatabaseProvider getDatabase() {
+        return database;
+    }
+
+    /**
+     * Gets cached named art entries for a plugin (single maps + multi-block groups).
+     * This is intended for synchronous contexts like tab-completion; it returns the latest cached view
+     * and triggers an async refresh when stale.
+     */
+    public List<ArtSummary> getCachedArtSummaries(String pluginId) {
+        if (pluginId == null) return Collections.emptyList();
+        CachedArts cache = artCacheByPlugin.computeIfAbsent(pluginId, k -> new CachedArts());
+        long now = System.currentTimeMillis();
+        if (now - cache.lastRefreshMs > artCacheTtlMs) {
+            refreshArtSummaries(pluginId);
+        }
+        return cache.arts != null ? cache.arts : Collections.emptyList();
+    }
+
+    public CompletableFuture<List<ArtSummary>> refreshArtSummaries(String pluginId) {
+        if (pluginId == null) return CompletableFuture.completedFuture(Collections.emptyList());
+        CachedArts cache = artCacheByPlugin.computeIfAbsent(pluginId, k -> new CachedArts());
+        if (!cache.refreshing.compareAndSet(false, true)) {
+            return CompletableFuture.completedFuture(cache.arts != null ? cache.arts : Collections.emptyList());
+        }
+
+        return database.getArtSummariesByPlugin(pluginId).thenApply(list -> {
+            List<ArtSummary> sorted = new ArrayList<>(list != null ? list : Collections.emptyList());
+            sorted.sort(Comparator.comparing(ArtSummary::getName, String.CASE_INSENSITIVE_ORDER));
+            cache.arts = Collections.unmodifiableList(sorted);
+            cache.lastRefreshMs = System.currentTimeMillis();
+            return cache.arts;
+        }).whenComplete((v, err) -> cache.refreshing.set(false));
+    }
+}

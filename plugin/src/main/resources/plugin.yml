@@ -1,10 +1,10 @@
 name: FineMaps
 version: ${version}
-main: com.example.finemaps.plugin.FineMapsPlugin
+main: org.finetree.finemaps.plugin.FineMapsPlugin
 api-version: "1.21"
 description: Database-backed map storage system with unlimited map IDs
-author: FineMaps Team
-website: https://github.com/example/finemaps
+author: Steampunk_Sam
+website: https://github.com/finetree/finemaps
 
 softdepend:
   - ProtocolLib

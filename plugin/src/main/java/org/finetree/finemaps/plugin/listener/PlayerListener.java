@@ -1,0 +1,246 @@
+package org.finetree.finemaps.plugin.listener;
+
+import org.finetree.finemaps.core.manager.MapManager;
+import org.finetree.finemaps.core.manager.MultiBlockMapHandler;
+import org.finetree.finemaps.core.util.FineMapsScheduler;
+import org.finetree.finemaps.plugin.FineMapsPlugin;
+import net.md_5.bungee.api.ChatMessageType;
+import net.md_5.bungee.api.chat.TextComponent;
+import org.bukkit.ChatColor;
+import org.bukkit.entity.Player;
+import org.bukkit.event.entity.EntityPickupItemEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerItemHeldEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerSwapHandItemsEvent;
+import org.bukkit.inventory.EquipmentSlot;
+import org.bukkit.inventory.ItemStack;
+
+/**
+ * Handles player events for map management, preview, and placement.
+ */
+public class PlayerListener implements Listener {
+
+    private final FineMapsPlugin plugin;
+    private final MapManager mapManager;
+    private final MultiBlockMapHandler multiBlockHandler;
+
+    public PlayerListener(FineMapsPlugin plugin) {
+        this.plugin = plugin;
+        this.mapManager = plugin.getMapManager();
+        this.multiBlockHandler = plugin.getMultiBlockHandler();
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        Player player = event.getPlayer();
+        
+        // Check for pending map recoveries (maps from disconnected rasterizing sessions)
+        if (plugin.getPendingMapRecovery() != null) {
+            plugin.getPendingMapRecovery().onPlayerJoin(player);
+        }
+        
+        // Schedule delayed task to send map data for held maps
+        FineMapsScheduler.runForEntityDelayed(plugin, player, () -> {
+            if (!player.isOnline()) return;
+            
+            // Check inventory for stored maps and send their data
+            for (ItemStack item : player.getInventory().getContents()) {
+                if (item != null && mapManager.isStoredMap(item)) {
+                    // Re-bind MapView renderers after restart so maps in frames/hands are not blank.
+                    try {
+                        mapManager.bindMapViewToItem(item);
+                    } catch (Throwable ignored) {
+                    }
+                    long mapId = mapManager.getMapIdFromItem(item);
+                    if (mapId != -1) {
+                        mapManager.sendMapToPlayer(player, mapId);
+                    }
+                    
+                    // Also send data for multi-block maps
+                    long groupId = mapManager.getGroupIdFromItem(item);
+                    if (groupId > 0) {
+                        mapManager.getMultiBlockMap(groupId).thenAccept(optMap -> {
+                            optMap.ifPresent(multiMap -> {
+                                for (org.finetree.finemaps.api.map.StoredMap map : multiMap.getMaps()) {
+                                    mapManager.sendMapToPlayer(player, map.getId());
+                                }
+                            });
+                        });
+                    }
+                }
+            }
+            
+            // Check if currently held item is a multi-block map
+            checkAndStartPreview(player);
+        }, 20L); // 1 second delay
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        Player player = event.getPlayer();
+        
+        // Stop preview task
+        multiBlockHandler.stopPreviewTask(player);
+        
+        // Clean up virtual IDs for this player
+        mapManager.onPlayerQuit(player.getUniqueId());
+    }
+    
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onItemHeldChange(PlayerItemHeldEvent event) {
+        Player player = event.getPlayer();
+        
+        // Stop current preview
+        multiBlockHandler.stopPreviewTask(player);
+        
+        // Check if new item is a multi-block map (delayed to get actual item)
+        FineMapsScheduler.runForEntityDelayed(plugin, player, () -> {
+            checkAndStartPreview(player);
+        }, 1L);
+    }
+
+    /**
+     * If a stored map item is picked up into the currently-held slot, Bukkit does not fire
+     * {@link PlayerItemHeldEvent}. We re-check the held items after pickup to start the preview immediately.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onItemPickup(EntityPickupItemEvent event) {
+        if (!(event.getEntity() instanceof Player)) {
+            return;
+        }
+        Player player = (Player) event.getEntity();
+
+        ItemStack stack = event.getItem() != null ? event.getItem().getItemStack() : null;
+        if (stack == null || !mapManager.isStoredMap(stack)) {
+            return;
+        }
+
+        // Delay 1 tick so inventory changes are applied.
+        FineMapsScheduler.runForEntityDelayed(plugin, player, () -> checkAndStartPreview(player), 1L);
+    }
+
+    /**
+     * Starting preview when maps are swapped between hands.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onSwapHands(PlayerSwapHandItemsEvent event) {
+        Player player = event.getPlayer();
+        // Delay 1 tick so the swap is applied.
+        FineMapsScheduler.runForEntityDelayed(plugin, player, () -> checkAndStartPreview(player), 1L);
+    }
+
+    /**
+     * Covers inventory-click moves that place a stored map into the active slot without changing the held slot index.
+     * We only react when a stored map is involved to keep this lightweight.
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player)) {
+            return;
+        }
+        Player player = (Player) event.getWhoClicked();
+
+        ItemStack cursor = event.getCursor();
+        ItemStack current = event.getCurrentItem();
+        boolean involvesStoredMap =
+            (cursor != null && mapManager.isStoredMap(cursor)) ||
+            (current != null && mapManager.isStoredMap(current));
+        if (!involvesStoredMap) {
+            return;
+        }
+
+        FineMapsScheduler.runForEntityDelayed(plugin, player, () -> checkAndStartPreview(player), 1L);
+    }
+    
+    @EventHandler(priority = EventPriority.HIGH)
+    public void onPlayerInteract(PlayerInteractEvent event) {
+        // Only handle right-click actions
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK && event.getAction() != Action.RIGHT_CLICK_AIR) {
+            return;
+        }
+        
+        // Only handle hands (ignore physical, etc.)
+        if (event.getHand() != EquipmentSlot.HAND && event.getHand() != EquipmentSlot.OFF_HAND) {
+            return;
+        }
+        
+        Player player = event.getPlayer();
+        ItemStack item = event.getItem();
+        if (item == null) {
+            item = (event.getHand() == EquipmentSlot.OFF_HAND)
+                ? player.getInventory().getItemInOffHand()
+                : player.getInventory().getItemInMainHand();
+        }
+
+        // Check if holding a stored map (single or multi-block)
+        if (item == null || !mapManager.isStoredMap(item)) {
+            return;
+        }
+
+        // Sneak + right click rotates multi-block map items instead of placing.
+        if (player.isSneaking() && mapManager.getGroupIdFromItem(item) > 0) {
+            event.setCancelled(true);
+
+            boolean rotated = mapManager.rotateMultiBlockItem(item);
+            if (rotated) {
+                // Ensure the mutated stack is written back to the correct hand.
+                if (event.getHand() == EquipmentSlot.OFF_HAND) {
+                    player.getInventory().setItemInOffHand(item);
+                } else {
+                    player.getInventory().setItemInMainHand(item);
+                }
+                player.updateInventory();
+
+                int rot = mapManager.getMultiBlockRotationDegrees(item);
+                sendActionBar(player, ChatColor.YELLOW + "Rotation: " + ChatColor.WHITE + rot + "\u00B0");
+            }
+            return;
+        }
+        
+        // This is a stored map - try to place it using the placement system
+        event.setCancelled(true);
+
+        multiBlockHandler.tryPlaceStoredMap(player, item, event.getHand());
+    }
+
+    private void sendActionBar(Player player, String message) {
+        if (player == null || message == null) return;
+        try {
+            player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(message));
+            return;
+        } catch (Throwable ignored) {
+        }
+        // Fallback: chat message (best-effort)
+        try {
+            player.sendMessage(message);
+        } catch (Throwable ignored) {
+        }
+    }
+    
+    /**
+     * Checks if player is holding a multi-block map and starts preview if so.
+     *
+     * @param player The player
+     */
+    private void checkAndStartPreview(Player player) {
+        if (!player.isOnline()) return;
+        
+        ItemStack main = player.getInventory().getItemInMainHand();
+        ItemStack off = player.getInventory().getItemInOffHand();
+        ItemStack held = (main != null && mapManager.isStoredMap(main)) ? main :
+                         (off != null && mapManager.isStoredMap(off)) ? off : null;
+        if (held != null) {
+            // Upgrade held multi-block items to show rotation in lore.
+            mapManager.ensureMultiBlockItemLore(held);
+            // Start preview for stored map (single or multi-block)
+            multiBlockHandler.startPreviewTask(player);
+        }
+    }
+}
