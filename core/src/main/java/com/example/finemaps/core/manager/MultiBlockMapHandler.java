@@ -1048,11 +1048,6 @@ public class MultiBlockMapHandler {
         ItemFrame frame = world.spawn(loc, ItemFrame.class);
         frame.setFacingDirection(hitFace);
 
-        try {
-            frame.setFixed(true);
-        } catch (NoSuchMethodError ignored) {
-        }
-
         ItemStack mapItem = mapManager.createMapItem(mapId);
         frame.setItem(mapItem);
         frame.setVisible(false);
@@ -1506,12 +1501,6 @@ public class MultiBlockMapHandler {
                 // Spawn item frame
                 ItemFrame frame = world.spawn(loc, ItemFrame.class);
                 frame.setFacingDirection(facing);
-                
-                // Try to set fixed (prevents rotation) - may not exist on older versions
-                try {
-                    frame.setFixed(true);
-                } catch (NoSuchMethodError ignored) {
-                }
                 
                 // Create and set map item
                 ItemStack mapItem = mapManager.createMapItem(map.getId());
