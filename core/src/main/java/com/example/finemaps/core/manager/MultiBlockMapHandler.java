@@ -215,28 +215,33 @@ public class MultiBlockMapHandler {
         playersWithPreview.add(playerId);
         
         FineMapsScheduler.Task task = FineMapsScheduler.runForEntityRepeating(plugin, player, () -> {
-            Player p = plugin.getServer().getPlayer(playerId);
-            if (p == null || !p.isOnline()) {
-                stopPreviewTask(p != null ? p : player);
-                return;
-            }
+            try {
+                Player p = plugin.getServer().getPlayer(playerId);
+                if (p == null || !p.isOnline()) {
+                    stopPreviewTask(p != null ? p : player);
+                    return;
+                }
 
-            // Prefer main-hand, fall back to off-hand
-            ItemStack held = p.getInventory().getItemInMainHand();
-            if (held == null || !mapManager.isStoredMap(held)) {
-                held = p.getInventory().getItemInOffHand();
-            }
-            if (held == null || !mapManager.isStoredMap(held)) {
-                clearPreview(p);
-                stopPreviewTask(p);
-                return;
-            }
+                // Prefer main-hand, fall back to off-hand
+                ItemStack held = p.getInventory().getItemInMainHand();
+                if (held == null || !mapManager.isStoredMap(held)) {
+                    held = p.getInventory().getItemInOffHand();
+                }
+                if (held == null || !mapManager.isStoredMap(held)) {
+                    clearPreview(p);
+                    stopPreviewTask(p);
+                    return;
+                }
 
-            // Show preview outline (1x1 for single maps, WxH for multi-block items)
-            long groupId = mapManager.getGroupIdFromItem(held);
-            int width = groupId > 0 ? mapManager.getMultiBlockWidth(held) : 1;
-            int height = groupId > 0 ? mapManager.getMultiBlockHeight(held) : 1;
-            showPlacementPreview(p, held, width, height);
+                // Show preview outline (1x1 for single maps, WxH for multi-block items)
+                long groupId = mapManager.getGroupIdFromItem(held);
+                int width = groupId > 0 ? mapManager.getMultiBlockWidth(held) : 1;
+                int height = groupId > 0 ? mapManager.getMultiBlockHeight(held) : 1;
+                showPlacementPreview(p, held, width, height);
+            } catch (Throwable ignored) {
+                // On Folia, region thread restrictions can throw in world/entity access.
+                // Never let the repeating preview task die; worst case the preview just doesn't update this tick.
+            }
         }, 0L, 4L); // Update every 4 ticks (0.2s)
 
         // Some schedulers (especially on Folia builds with differing APIs) may fail to schedule and return null.
@@ -336,11 +341,17 @@ public class MultiBlockMapHandler {
 
                 // Check for existing item frames
                 Location checkLoc = loc.clone().add(0.5, 0.5, 0.5);
-                for (Entity entity : loc.getWorld().getNearbyEntities(checkLoc, 0.5, 0.5, 0.5)) {
-                    if (entity instanceof ItemFrame) {
-                        canPlace = false;
-                        break;
+                try {
+                    for (Entity entity : loc.getWorld().getNearbyEntities(checkLoc, 0.5, 0.5, 0.5)) {
+                        if (entity instanceof ItemFrame) {
+                            canPlace = false;
+                            break;
+                        }
                     }
+                } catch (Throwable t) {
+                    // If the server forbids cross-region entity queries (common on Folia near chunk/region borders),
+                    // treat the placement as invalid for safety, but keep the preview running.
+                    canPlace = false;
                 }
             }
         }
