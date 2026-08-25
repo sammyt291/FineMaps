@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
@@ -532,14 +533,21 @@ public final class AnimationRegistry {
      */
     private final class MapUpdateDispatcher implements Runnable {
         private final Map<UUID, LinkedHashMap<Integer, byte[]>> pending = new HashMap<>();
+        private final Map<UUID, Map<Integer, byte[]>> lastSent = new HashMap<>();
+        private final Set<MapViewerKey> forceFullUpdates = new HashSet<>();
         private FineMapsScheduler.Task task;
 
         void enqueue(Player player, int vanillaMapId, byte[] pixels) {
+            enqueue(player, vanillaMapId, pixels, false);
+        }
+
+        void enqueue(Player player, int vanillaMapId, byte[] pixels, boolean forceFull) {
             if (player == null || !player.isOnline() || vanillaMapId < 0 || pixels == null) return;
-            LinkedHashMap<Integer, byte[]> updates = pending.computeIfAbsent(
-                player.getUniqueId(), ignored -> new LinkedHashMap<>());
+            UUID playerId = player.getUniqueId();
+            LinkedHashMap<Integer, byte[]> updates = pending.computeIfAbsent(playerId, ignored -> new LinkedHashMap<>());
             // Preserve tile order so a multi-map frame is sent in a stable order on every flush.
             updates.put(vanillaMapId, pixels);
+            if (forceFull) forceFullUpdates.add(new MapViewerKey(playerId, vanillaMapId));
             if (task == null) {
                 task = FineMapsScheduler.runSyncRepeating(plugin, this, 1L, 1L);
             }
@@ -552,6 +560,8 @@ public final class AnimationRegistry {
                 Map.Entry<UUID, LinkedHashMap<Integer, byte[]>> entry = players.next();
                 Player player = Bukkit.getPlayer(entry.getKey());
                 if (player == null || !player.isOnline()) {
+                    lastSent.remove(entry.getKey());
+                    forceFullUpdates.removeIf(key -> key.playerId().equals(entry.getKey()));
                     players.remove();
                     continue;
                 }
@@ -559,11 +569,28 @@ public final class AnimationRegistry {
                 // but keeping them in the same server flush prevents adjacent tiles lagging one
                 // or more ticks behind each other on the client.
                 for (Map.Entry<Integer, byte[]> update : entry.getValue().entrySet()) {
-                    nmsAdapter.sendMapUpdate(player, update.getKey(), update.getValue());
+                    int mapId = update.getKey();
+                    byte[] pixels = update.getValue();
+                    MapViewerKey key = new MapViewerKey(entry.getKey(), mapId);
+                    Map<Integer, byte[]> playerBaselines = lastSent.computeIfAbsent(entry.getKey(), ignored -> new HashMap<>());
+                    byte[] previous = playerBaselines.get(mapId);
+                    MapPatch patch = forceFullUpdates.remove(key) ? null : MapPatch.between(previous, pixels);
+                    if (patch == null) {
+                        nmsAdapter.sendMapUpdate(player, mapId, pixels);
+                    } else if (!patch.isEmpty()) {
+                        nmsAdapter.sendPartialMapUpdate(player, mapId, patch.startX(), patch.startY(),
+                            patch.width(), patch.height(), patch.pixels());
+                    }
+                    // Frames loaded from the animation cache are immutable, so retaining the reference
+                    // avoids a 16 KiB allocation for every map, viewer, and animation frame.
+                    playerBaselines.put(mapId, pixels);
                 }
                 players.remove();
             }
-            if (pending.isEmpty()) stop();
+            if (pending.isEmpty() && task != null) {
+                task.cancel();
+                task = null;
+            }
         }
 
         void stop() {
@@ -572,6 +599,50 @@ public final class AnimationRegistry {
                 task = null;
             }
             pending.clear();
+            lastSent.clear();
+            forceFullUpdates.clear();
+        }
+    }
+
+    private record MapViewerKey(UUID playerId, int mapId) {}
+
+    /** A minimal rectangular Minecraft map patch between two complete 128x128 frames. */
+    static record MapPatch(int startX, int startY, int width, int height, byte[] pixels) {
+        private static final MapPatch EMPTY = new MapPatch(0, 0, 0, 0, new byte[0]);
+
+        static MapPatch between(byte[] previous, byte[] current) {
+            if (previous == null || current == null
+                || previous.length != org.finetree.finemaps.api.map.MapData.TOTAL_PIXELS
+                || current.length != org.finetree.finemaps.api.map.MapData.TOTAL_PIXELS) {
+                return null;
+            }
+            if (Arrays.equals(previous, current)) return EMPTY;
+
+            int minX = 128;
+            int minY = 128;
+            int maxX = -1;
+            int maxY = -1;
+            for (int index = 0; index < current.length; index++) {
+                if (previous[index] == current[index]) continue;
+                int x = index & 127;
+                int y = index >> 7;
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x);
+                maxY = Math.max(maxY, y);
+            }
+
+            int width = maxX - minX + 1;
+            int height = maxY - minY + 1;
+            byte[] patch = new byte[width * height];
+            for (int y = 0; y < height; y++) {
+                System.arraycopy(current, (minY + y) * 128 + minX, patch, y * width, width);
+            }
+            return new MapPatch(minX, minY, width, height, patch);
+        }
+
+        boolean isEmpty() {
+            return width == 0 || height == 0;
         }
     }
 
@@ -861,7 +932,9 @@ public final class AnimationRegistry {
 
             // Ensure our runtime pixel cache/renderer is in sync, then push to the client.
             mapManager.updateMapPixelsRuntime(dbMapId, pixels);
-            mapUpdates.enqueue(player, vanillaMapId, pixels);
+            // A newly discovered viewer may not have any prior client-side pixels (notably after
+            // joining or a plugin restart), so seed it with one complete frame before deltas.
+            mapUpdates.enqueue(player, vanillaMapId, pixels, true);
         }
 
         private static final class PlayheadSnapshot {

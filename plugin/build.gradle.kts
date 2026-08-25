@@ -30,6 +30,12 @@ dependencies {
     // ImageIO plugins for additional formats (shaded into the plugin)
     // - WEBP (including animated WebP when supported by reader)
     implementation("com.twelvemonkeys.imageio:imageio-webp:3.11.0")
+
+    testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 tasks {
