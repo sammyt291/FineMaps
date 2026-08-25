@@ -290,6 +290,11 @@ public class FineMapsConfig {
         @ConfigName("animation-frame-cache-frames")
         private int animationFrameCacheFrames = 32;
 
+        @Comment("Maximum animated-map packet payload sent to one player per second, in KiB.\n" +
+            "Updates beyond this budget are coalesced to the newest frame instead of queued.")
+        @ConfigName("animation-bandwidth-per-player-kib")
+        private int animationBandwidthPerPlayerKib = 256;
+
         @Comment("How many worker threads to use when rasterising animated imports (GIF/APNG/WEBP/MP4/WEBM).\n" +
             "1 = single-threaded. 0 = auto (uses available processors).")
         @ConfigName("processor-threads")
@@ -345,6 +350,10 @@ public class FineMapsConfig {
 
         public int getAnimationFrameCacheFrames() {
             return animationFrameCacheFrames;
+        }
+
+        public int getAnimationBandwidthPerPlayerKib() {
+            return animationBandwidthPerPlayerKib;
         }
 
         public int getProcessorThreads() {

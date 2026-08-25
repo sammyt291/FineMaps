@@ -99,6 +99,11 @@ images:
   # Frame pixel data is stored on disk; this cache avoids constant disk reads.
   animation-frame-cache-frames: 32
 
+  # Maximum animated-map packet payload sent to each player per second.
+  # When the limit is reached, intermediate frames are dropped and replaced by the newest frame,
+  # preventing the client's network queue from accumulating an ever-growing backlog.
+  animation-bandwidth-per-player-kib: 256
+
   # How many worker threads to use when rasterising animated imports (GIF/APNG/WEBP/MP4/WEBM).
   # 1 = single-threaded. 0 = auto (uses available processors).
   processor-threads: 0

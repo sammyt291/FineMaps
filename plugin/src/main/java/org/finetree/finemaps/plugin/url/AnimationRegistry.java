@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
@@ -38,6 +39,7 @@ public final class AnimationRegistry {
     private final NMSAdapter nmsAdapter;
     private final String cacheFolderName;
     private final int frameCacheFrames;
+    private final long bandwidthBytesPerSecond;
 
     private final File persistFile;
     private final AtomicBoolean loadedPersisted = new AtomicBoolean(false);
@@ -54,12 +56,14 @@ public final class AnimationRegistry {
     private FineMapsScheduler.Task viewerScanTask = null;
     private final MapUpdateDispatcher mapUpdates = new MapUpdateDispatcher();
 
-    public AnimationRegistry(Plugin plugin, MapManager mapManager, String cacheFolderName, int frameCacheFrames) {
+    public AnimationRegistry(Plugin plugin, MapManager mapManager, String cacheFolderName, int frameCacheFrames,
+                             int bandwidthPerPlayerKib) {
         this.plugin = plugin;
         this.mapManager = mapManager;
         this.nmsAdapter = mapManager.getNmsAdapter();
         this.cacheFolderName = (cacheFolderName != null && !cacheFolderName.isBlank()) ? cacheFolderName : "url-cache";
         this.frameCacheFrames = Math.max(0, frameCacheFrames);
+        this.bandwidthBytesPerSecond = Math.max(16L, bandwidthPerPlayerKib) * 1024L;
         this.persistFile = new File(plugin.getDataFolder(), "animations.yml");
     }
 
@@ -349,6 +353,7 @@ public final class AnimationRegistry {
 
         // Swap in the index first (so Animation pushes see the latest viewers).
         viewersByDbMapId = next;
+        mapUpdates.retainViewers(next);
 
         // Immediately push the current frame to newly-added viewers.
         // This fixes the "invisible until you pick up / re-place" behavior after restarts,
@@ -460,6 +465,7 @@ public final class AnimationRegistry {
 
         // Swap in the new index
         viewersByDbMapId = converted;
+        mapUpdates.retainViewers(converted);
 
         // Push current frames to newly-added viewers
         if (prev != null && !prev.isEmpty()) {
@@ -532,46 +538,195 @@ public final class AnimationRegistry {
      */
     private final class MapUpdateDispatcher implements Runnable {
         private final Map<UUID, LinkedHashMap<Integer, byte[]>> pending = new HashMap<>();
+        private final Map<UUID, Map<Integer, byte[]>> lastSent = new HashMap<>();
+        private final Set<MapViewerKey> forceFullUpdates = new HashSet<>();
+        private final Map<UUID, BandwidthLimiter> bandwidthLimiters = new HashMap<>();
         private FineMapsScheduler.Task task;
 
-        void enqueue(Player player, int vanillaMapId, byte[] pixels) {
+        synchronized void enqueue(Player player, int vanillaMapId, byte[] pixels) {
+            enqueue(player, vanillaMapId, pixels, false);
+        }
+
+        synchronized void enqueue(Player player, int vanillaMapId, byte[] pixels, boolean forceFull) {
             if (player == null || !player.isOnline() || vanillaMapId < 0 || pixels == null) return;
-            LinkedHashMap<Integer, byte[]> updates = pending.computeIfAbsent(
-                player.getUniqueId(), ignored -> new LinkedHashMap<>());
+            UUID playerId = player.getUniqueId();
+            LinkedHashMap<Integer, byte[]> updates = pending.computeIfAbsent(playerId, ignored -> new LinkedHashMap<>());
             // Preserve tile order so a multi-map frame is sent in a stable order on every flush.
             updates.put(vanillaMapId, pixels);
+            if (forceFull) forceFullUpdates.add(new MapViewerKey(playerId, vanillaMapId));
             if (task == null) {
                 task = FineMapsScheduler.runSyncRepeating(plugin, this, 1L, 1L);
             }
         }
 
         @Override
-        public void run() {
+        public synchronized void run() {
             java.util.Iterator<Map.Entry<UUID, LinkedHashMap<Integer, byte[]>>> players = pending.entrySet().iterator();
             while (players.hasNext()) {
                 Map.Entry<UUID, LinkedHashMap<Integer, byte[]>> entry = players.next();
                 Player player = Bukkit.getPlayer(entry.getKey());
                 if (player == null || !player.isOnline()) {
+                    lastSent.remove(entry.getKey());
+                    forceFullUpdates.removeIf(key -> key.playerId().equals(entry.getKey()));
                     players.remove();
                     continue;
                 }
-                // Drain the complete coalesced frame in this tick. Map packets are independent,
-                // but keeping them in the same server flush prevents adjacent tiles lagging one
-                // or more ticks behind each other on the client.
+                // Treat every coalesced update visible to this player as one transaction. Sending
+                // only the tiles which happen to fit the current token balance makes multi-map art
+                // show parts of two different frames. We therefore price the complete batch first
+                // and send either all of it in this tick or none of it.
+                List<PendingSend> sends = new java.util.ArrayList<>(entry.getValue().size());
+                long payloadBytes = 0L;
                 for (Map.Entry<Integer, byte[]> update : entry.getValue().entrySet()) {
-                    nmsAdapter.sendMapUpdate(player, update.getKey(), update.getValue());
+                    int mapId = update.getKey();
+                    byte[] pixels = update.getValue();
+                    MapViewerKey key = new MapViewerKey(entry.getKey(), mapId);
+                    Map<Integer, byte[]> playerBaselines = lastSent.computeIfAbsent(entry.getKey(), ignored -> new HashMap<>());
+                    byte[] previous = playerBaselines.get(mapId);
+                    MapPatch patch = forceFullUpdates.contains(key) ? null : MapPatch.between(previous, pixels);
+                    sends.add(new PendingSend(mapId, pixels, patch, key));
+                    payloadBytes += patch == null ? pixels.length : patch.pixels().length;
+                }
+
+                BandwidthLimiter limiter = bandwidthLimiters.computeIfAbsent(entry.getKey(),
+                    ignored -> new BandwidthLimiter(bandwidthBytesPerSecond));
+                if (!limiter.tryConsume(payloadBytes)) {
+                    // Enqueue calls replace these values with the newest frame while the complete
+                    // batch waits for budget, so there is no unbounded queue and no partial frame.
+                    continue;
+                }
+
+                Map<Integer, byte[]> playerBaselines = lastSent.computeIfAbsent(entry.getKey(), ignored -> new HashMap<>());
+                for (PendingSend send : sends) {
+                    int mapId = send.mapId();
+                    byte[] pixels = send.pixels();
+                    MapPatch patch = send.patch();
+                    if (patch == null) {
+                        nmsAdapter.sendMapUpdate(player, mapId, pixels);
+                    } else if (!patch.isEmpty()) {
+                        nmsAdapter.sendPartialMapUpdate(player, mapId, patch.startX(), patch.startY(),
+                            patch.width(), patch.height(), patch.pixels());
+                    }
+                    // Frames loaded from the animation cache are immutable, so retaining the reference
+                    // avoids a 16 KiB allocation for every map, viewer, and animation frame.
+                    playerBaselines.put(mapId, pixels);
+                    forceFullUpdates.remove(send.key());
                 }
                 players.remove();
             }
-            if (pending.isEmpty()) stop();
+            if (pending.isEmpty() && task != null) {
+                task.cancel();
+                task = null;
+            }
         }
 
-        void stop() {
+        synchronized void stop() {
             if (task != null) {
                 task.cancel();
                 task = null;
             }
             pending.clear();
+            lastSent.clear();
+            forceFullUpdates.clear();
+            bandwidthLimiters.clear();
+        }
+
+        synchronized void retainViewers(Map<Long, Map<UUID, Set<Integer>>> viewers) {
+            Set<MapViewerKey> retained = new HashSet<>();
+            if (viewers != null) {
+                for (Map<UUID, Set<Integer>> byPlayer : viewers.values()) {
+                    for (Map.Entry<UUID, Set<Integer>> player : byPlayer.entrySet()) {
+                        for (Integer mapId : player.getValue()) {
+                            retained.add(new MapViewerKey(player.getKey(), mapId));
+                        }
+                    }
+                }
+            }
+            lastSent.entrySet().removeIf(player -> {
+                player.getValue().keySet().removeIf(mapId -> !retained.contains(new MapViewerKey(player.getKey(), mapId)));
+                return player.getValue().isEmpty();
+            });
+            pending.entrySet().removeIf(player -> {
+                player.getValue().keySet().removeIf(mapId -> !retained.contains(new MapViewerKey(player.getKey(), mapId)));
+                return player.getValue().isEmpty();
+            });
+            forceFullUpdates.retainAll(retained);
+            bandwidthLimiters.keySet().retainAll(retained.stream().map(MapViewerKey::playerId).collect(java.util.stream.Collectors.toSet()));
+        }
+    }
+
+    private record MapViewerKey(UUID playerId, int mapId) {}
+
+    private record PendingSend(int mapId, byte[] pixels, MapPatch patch, MapViewerKey key) {}
+
+    static final class BandwidthLimiter {
+        private final long bytesPerSecond;
+        private double capacity;
+        private double available;
+        private long lastRefillNanos;
+
+        BandwidthLimiter(long bytesPerSecond) {
+            this.bytesPerSecond = Math.max(1, bytesPerSecond);
+            this.capacity = this.bytesPerSecond;
+            this.available = this.capacity;
+            this.lastRefillNanos = System.nanoTime();
+        }
+
+        boolean tryConsume(long bytes) {
+            long now = System.nanoTime();
+            available = Math.min(capacity,
+                available + ((now - lastRefillNanos) / 1_000_000_000.0) * bytesPerSecond);
+            lastRefillNanos = now;
+            if (bytes > capacity) {
+                // One multi-map frame can legitimately exceed a second's allowance. Increase only
+                // the burst ceiling so that frame can be delivered atomically; refill speed remains
+                // capped, making the next frame wait for the corresponding bandwidth budget.
+                available += bytes - capacity;
+                capacity = bytes;
+            }
+            if (bytes > available) return false;
+            available -= bytes;
+            return true;
+        }
+    }
+
+    /** A minimal rectangular Minecraft map patch between two complete 128x128 frames. */
+    static record MapPatch(int startX, int startY, int width, int height, byte[] pixels) {
+        private static final MapPatch EMPTY = new MapPatch(0, 0, 0, 0, new byte[0]);
+
+        static MapPatch between(byte[] previous, byte[] current) {
+            if (previous == null || current == null
+                || previous.length != org.finetree.finemaps.api.map.MapData.TOTAL_PIXELS
+                || current.length != org.finetree.finemaps.api.map.MapData.TOTAL_PIXELS) {
+                return null;
+            }
+            if (Arrays.equals(previous, current)) return EMPTY;
+
+            int minX = 128;
+            int minY = 128;
+            int maxX = -1;
+            int maxY = -1;
+            for (int index = 0; index < current.length; index++) {
+                if (previous[index] == current[index]) continue;
+                int x = index & 127;
+                int y = index >> 7;
+                minX = Math.min(minX, x);
+                minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x);
+                maxY = Math.max(maxY, y);
+            }
+
+            int width = maxX - minX + 1;
+            int height = maxY - minY + 1;
+            byte[] patch = new byte[width * height];
+            for (int y = 0; y < height; y++) {
+                System.arraycopy(current, (minY + y) * 128 + minX, patch, y * width, width);
+            }
+            return new MapPatch(minX, minY, width, height, patch);
+        }
+
+        boolean isEmpty() {
+            return width == 0 || height == 0;
         }
     }
 
@@ -861,7 +1016,9 @@ public final class AnimationRegistry {
 
             // Ensure our runtime pixel cache/renderer is in sync, then push to the client.
             mapManager.updateMapPixelsRuntime(dbMapId, pixels);
-            mapUpdates.enqueue(player, vanillaMapId, pixels);
+            // A newly discovered viewer may not have any prior client-side pixels (notably after
+            // joining or a plugin restart), so seed it with one complete frame before deltas.
+            mapUpdates.enqueue(player, vanillaMapId, pixels, true);
         }
 
         private static final class PlayheadSnapshot {
