@@ -537,20 +537,28 @@ public final class AnimationRegistry {
      * from different animation frames at the same time, which produces visible tearing.
      */
     private final class MapUpdateDispatcher implements Runnable {
-        private final Map<UUID, LinkedHashMap<Integer, byte[]>> pending = new HashMap<>();
+        /*
+         * Keep independent animations in independent transactions. A player can see several
+         * walls at once; merging all of their tiles into one batch makes the burst ceiling grow
+         * with every wall and means no wall can advance until the combined batch is affordable.
+         */
+        private final Map<UUID, LinkedHashMap<Object, LinkedHashMap<Integer, byte[]>>> pending = new HashMap<>();
         private final Map<UUID, Map<Integer, byte[]>> lastSent = new HashMap<>();
         private final Set<MapViewerKey> forceFullUpdates = new HashSet<>();
         private final Map<UUID, BandwidthLimiter> bandwidthLimiters = new HashMap<>();
         private FineMapsScheduler.Task task;
 
-        synchronized void enqueue(Player player, int vanillaMapId, byte[] pixels) {
-            enqueue(player, vanillaMapId, pixels, false);
+        synchronized void enqueue(Player player, Object animationKey, int vanillaMapId, byte[] pixels) {
+            enqueue(player, animationKey, vanillaMapId, pixels, false);
         }
 
-        synchronized void enqueue(Player player, int vanillaMapId, byte[] pixels, boolean forceFull) {
+        synchronized void enqueue(Player player, Object animationKey, int vanillaMapId, byte[] pixels, boolean forceFull) {
             if (player == null || !player.isOnline() || vanillaMapId < 0 || pixels == null) return;
             UUID playerId = player.getUniqueId();
-            LinkedHashMap<Integer, byte[]> updates = pending.computeIfAbsent(playerId, ignored -> new LinkedHashMap<>());
+            LinkedHashMap<Object, LinkedHashMap<Integer, byte[]>> animations =
+                pending.computeIfAbsent(playerId, ignored -> new LinkedHashMap<>());
+            LinkedHashMap<Integer, byte[]> updates = animations.computeIfAbsent(animationKey,
+                ignored -> new LinkedHashMap<>());
             // Preserve tile order so a multi-map frame is sent in a stable order on every flush.
             updates.put(vanillaMapId, pixels);
             if (forceFull) forceFullUpdates.add(new MapViewerKey(playerId, vanillaMapId));
@@ -561,9 +569,10 @@ public final class AnimationRegistry {
 
         @Override
         public synchronized void run() {
-            java.util.Iterator<Map.Entry<UUID, LinkedHashMap<Integer, byte[]>>> players = pending.entrySet().iterator();
+            java.util.Iterator<Map.Entry<UUID, LinkedHashMap<Object, LinkedHashMap<Integer, byte[]>>>> players =
+                pending.entrySet().iterator();
             while (players.hasNext()) {
-                Map.Entry<UUID, LinkedHashMap<Integer, byte[]>> entry = players.next();
+                Map.Entry<UUID, LinkedHashMap<Object, LinkedHashMap<Integer, byte[]>>> entry = players.next();
                 Player player = Bukkit.getPlayer(entry.getKey());
                 if (player == null || !player.isOnline()) {
                     lastSent.remove(entry.getKey());
@@ -571,13 +580,19 @@ public final class AnimationRegistry {
                     players.remove();
                     continue;
                 }
-                // Treat every coalesced update visible to this player as one transaction. Sending
-                // only the tiles which happen to fit the current token balance makes multi-map art
-                // show parts of two different frames. We therefore price the complete batch first
-                // and send either all of it in this tick or none of it.
-                List<PendingSend> sends = new java.util.ArrayList<>(entry.getValue().size());
+                if (entry.getValue().isEmpty()) {
+                    players.remove();
+                    continue;
+                }
+                // The first entry is the oldest waiting animation. A successful send removes it,
+                // naturally moving the next wall to the front and preventing a busy wall from
+                // starving the others.
+                Map.Entry<Object, LinkedHashMap<Integer, byte[]>> animation =
+                    entry.getValue().entrySet().iterator().next();
+                LinkedHashMap<Integer, byte[]> updates = animation.getValue();
+                List<PendingSend> sends = new java.util.ArrayList<>(updates.size());
                 long payloadBytes = 0L;
-                for (Map.Entry<Integer, byte[]> update : entry.getValue().entrySet()) {
+                for (Map.Entry<Integer, byte[]> update : updates.entrySet()) {
                     int mapId = update.getKey();
                     byte[] pixels = update.getValue();
                     MapViewerKey key = new MapViewerKey(entry.getKey(), mapId);
@@ -614,13 +629,10 @@ public final class AnimationRegistry {
                 }
                 // Remove only updates whose baseline now matches the pending frame. Entries which
                 // exceeded the token budget stay pending and will be coalesced before the next tick.
-                entry.getValue().entrySet().removeIf(update ->
+                updates.entrySet().removeIf(update ->
                     lastSent.getOrDefault(entry.getKey(), java.util.Collections.emptyMap()).get(update.getKey()) == update.getValue());
+                if (updates.isEmpty()) entry.getValue().remove(animation.getKey());
                 if (entry.getValue().isEmpty()) players.remove();
-            }
-            if (pending.isEmpty() && task != null) {
-                task.cancel();
-                task = null;
             }
             if (pending.isEmpty() && task != null) {
                 task.cancel();
@@ -655,7 +667,9 @@ public final class AnimationRegistry {
                 return player.getValue().isEmpty();
             });
             pending.entrySet().removeIf(player -> {
-                player.getValue().keySet().removeIf(mapId -> !retained.contains(new MapViewerKey(player.getKey(), mapId)));
+                player.getValue().values().forEach(updates ->
+                    updates.keySet().removeIf(mapId -> !retained.contains(new MapViewerKey(player.getKey(), mapId))));
+                player.getValue().values().removeIf(Map::isEmpty);
                 return player.getValue().isEmpty();
             });
             forceFullUpdates.retainAll(retained);
@@ -989,7 +1003,7 @@ public final class AnimationRegistry {
                 if (vanillaIds == null || vanillaIds.isEmpty()) continue;
                 for (Integer vanillaMapId : vanillaIds) {
                     if (vanillaMapId == null || vanillaMapId < 0) continue;
-                    mapUpdates.enqueue(p, vanillaMapId, pixels);
+                    mapUpdates.enqueue(p, this, vanillaMapId, pixels);
                 }
             }
         }
@@ -1026,7 +1040,7 @@ public final class AnimationRegistry {
             mapManager.updateMapPixelsRuntime(dbMapId, pixels);
             // A newly discovered viewer may not have any prior client-side pixels (notably after
             // joining or a plugin restart), so seed it with one complete frame before deltas.
-            mapUpdates.enqueue(player, vanillaMapId, pixels, true);
+            mapUpdates.enqueue(player, this, vanillaMapId, pixels, true);
         }
 
         private static final class PlayheadSnapshot {
