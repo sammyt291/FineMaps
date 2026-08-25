@@ -22,6 +22,12 @@ dependencies {
     implementation("com.zaxxer:HikariCP:4.0.3")
     implementation("org.xerial:sqlite-jdbc:3.42.0.0")
     implementation("com.mysql:mysql-connector-j:8.0.33")
+
+    testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 java {

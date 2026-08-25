@@ -149,7 +149,8 @@ public class FineMapsPlugin extends JavaPlugin {
 
         int major = NMSAdapterFactory.getMajorVersion();
         int minor = NMSAdapterFactory.getMinorVersion();
-        String mcVersion = "1." + major + "." + minor;
+        String detectedVersion = NMSAdapterFactory.getMinecraftVersion();
+        String mcVersion = detectedVersion != null ? detectedVersion : "unknown";
 
         boolean isFolia = NMSAdapterFactory.isFolia();
         boolean hasProtocolLib = NMSAdapterFactory.isProtocolLibAvailable();
@@ -167,7 +168,8 @@ public class FineMapsPlugin extends JavaPlugin {
     }
 
     private boolean checkSupportedServerVersion() {
-        String version = Bukkit.getBukkitVersion();
+        String distributionVersion = Bukkit.getBukkitVersion();
+        String minecraftVersion = NMSAdapterFactory.getMinecraftVersion();
         int major = NMSAdapterFactory.getMajorVersion();
         int minor = NMSAdapterFactory.getMinorVersion();
 
@@ -176,7 +178,8 @@ public class FineMapsPlugin extends JavaPlugin {
 
         if (major < MIN_SUPPORTED_MAJOR) {
             getLogger().severe("FineMaps requires Minecraft 1." + MIN_SUPPORTED_MAJOR + "+.");
-            getLogger().severe("Detected server version: " + version + " (1." + major + "." + minor + ").");
+            getLogger().severe("Detected server version: " + distributionVersion
+                + " (Minecraft " + (minecraftVersion != null ? minecraftVersion : "1." + major + "." + minor) + ").");
             getLogger().severe("Please update your server or use an older FineMaps version built for legacy servers.");
             return false;
         }
