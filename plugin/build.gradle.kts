@@ -15,7 +15,8 @@ dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
     
     // RedLib for config management - shade it
-    implementation("com.github.Redempt:RedLib:6.5.8")
+    // implementation("com.github.Redempt:RedLib:6.5.8")
+    implementation("com.github.sammyt291:RedLib:fix-modern-version-parsing-SNAPSHOT")
     
     // ProtocolLib - provided at runtime
     compileOnly("net.dmulloy2:ProtocolLib:5.4.0")
@@ -44,6 +45,11 @@ tasks {
     shadowJar {
         archiveBaseName.set("FineMaps")
         archiveClassifier.set("")
+
+        val pluginsDirectory = File("F:/Plugins")
+        if (pluginsDirectory.exists()) {
+            destinationDirectory.set(pluginsDirectory)
+        }
 
         // Needed for ImageIO SPI providers (e.g., WEBP reader) in shaded JARs
         mergeServiceFiles()
