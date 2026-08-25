@@ -5,6 +5,7 @@ import com.comphenix.protocol.PacketType;
 import com.comphenix.protocol.ProtocolLibrary;
 import com.comphenix.protocol.ProtocolManager;
 import com.comphenix.protocol.events.*;
+import com.comphenix.protocol.reflect.StructureModifier;
 import com.comphenix.protocol.wrappers.WrappedDataWatcher;
 import org.bukkit.*;
 import org.bukkit.entity.Entity;
@@ -12,8 +13,13 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.MapMeta;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Collections;
@@ -86,21 +92,7 @@ public class ProtocolLibAdapter implements NMSAdapter {
     @Override
     public void sendMapUpdate(Player player, int mapId, byte[] pixels) {
         try {
-            // Create map data packet (1.21+ packet structure)
-            PacketContainer packet = protocolManager.createPacket(PacketType.Play.Server.MAP);
-            
-            packet.getIntegers().write(0, mapId);
-            packet.getBytes().write(0, (byte) 0); // Scale
-            packet.getBooleans().write(0, false); // Locked
-            
-            // Write map data
-            packet.getIntegers().write(1, 0); // Start X
-            packet.getIntegers().write(2, 0); // Start Y
-            packet.getIntegers().write(3, 128); // Width
-            packet.getIntegers().write(4, 128); // Height
-            packet.getByteArrays().write(0, pixels);
-            
-            protocolManager.sendServerPacket(player, packet);
+            protocolManager.sendServerPacket(player, createMapPacket(mapId, 0, 0, 128, 128, pixels));
         } catch (Exception e) {
             logger.log(Level.WARNING, "Failed to send map update packet", e);
         }
@@ -110,8 +102,23 @@ public class ProtocolLibAdapter implements NMSAdapter {
     public void sendPartialMapUpdate(Player player, int mapId, int startX, int startY,
                                       int width, int height, byte[] pixels) {
         try {
-            PacketContainer packet = protocolManager.createPacket(PacketType.Play.Server.MAP);
-            
+            protocolManager.sendServerPacket(player,
+                createMapPacket(mapId, startX, startY, width, height, pixels));
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "Failed to send partial map update", e);
+        }
+    }
+
+    /**
+     * Builds both the original 1.21 map packet and the 1.21.5+ form. Mojang changed the
+     * packet's first field from an {@code int} to a {@code MapId} value object, so using
+     * ProtocolLib's integer modifier unconditionally leaves it with no writable fields.
+     */
+    private PacketContainer createMapPacket(int mapId, int startX, int startY,
+                                            int width, int height, byte[] pixels) throws ReflectiveOperationException {
+        PacketContainer packet = protocolManager.createPacket(PacketType.Play.Server.MAP);
+
+        if (packet.getIntegers().size() >= 5) {
             packet.getIntegers().write(0, mapId);
             packet.getBytes().write(0, (byte) 0);
             packet.getBooleans().write(0, false);
@@ -120,11 +127,48 @@ public class ProtocolLibAdapter implements NMSAdapter {
             packet.getIntegers().write(3, width);
             packet.getIntegers().write(4, height);
             packet.getByteArrays().write(0, pixels);
-            
-            protocolManager.sendServerPacket(player, packet);
-        } catch (Exception e) {
-            logger.log(Level.WARNING, "Failed to send partial map update", e);
+            return packet;
         }
+
+        StructureModifier<Object> fields = packet.getModifier();
+        if (fields.size() < 5) {
+            throw new IllegalStateException("Unsupported map packet structure with " + fields.size() + " fields");
+        }
+
+        Class<?> mapIdType = fields.getField(0).getType();
+        Object typedMapId = mapIdType == int.class || mapIdType == Integer.class
+            ? mapId
+            : construct(mapIdType, mapId);
+        Class<?> patchType = getOptionalValueType(fields.getField(4));
+        Object patch = construct(patchType, startX, startY, width, height, pixels);
+
+        fields.write(0, typedMapId);
+        fields.write(1, (byte) 0);
+        fields.write(2, false);
+        fields.write(3, Optional.empty());
+        fields.write(4, Optional.of(patch));
+        return packet;
+    }
+
+    private static Class<?> getOptionalValueType(Field field) {
+        Type genericType = field.getGenericType();
+        if (genericType instanceof ParameterizedType parameterizedType) {
+            Type valueType = parameterizedType.getActualTypeArguments()[0];
+            if (valueType instanceof Class<?> valueClass) {
+                return valueClass;
+            }
+        }
+        throw new IllegalStateException("Cannot determine map patch type from " + field);
+    }
+
+    private static Object construct(Class<?> type, Object... arguments) throws ReflectiveOperationException {
+        for (Constructor<?> constructor : type.getDeclaredConstructors()) {
+            if (constructor.getParameterCount() == arguments.length) {
+                constructor.setAccessible(true);
+                return constructor.newInstance(arguments);
+            }
+        }
+        throw new NoSuchMethodException("No compatible constructor found for " + type.getName());
     }
 
     @Override
