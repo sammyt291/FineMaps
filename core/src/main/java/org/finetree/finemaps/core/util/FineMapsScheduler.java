@@ -14,8 +14,8 @@ import java.util.function.Consumer;
  * Scheduling utilities that work on both Bukkit/Paper and Folia.
  *
  * <p>On Folia, Bukkit's legacy scheduler methods throw {@link UnsupportedOperationException}, so we
- * route work through Folia schedulers. Per user request we detect Folia via
- * {@code Bukkit.getVersion().contains("Folia")}.</p>
+ * route work through Folia schedulers. Detection uses the runtime server identity, because Paper
+ * also ships the Folia scheduler API types.</p>
  *
  * <p>This project is a single JAR: Folia/Paper-only APIs must only be invoked when running on Folia.</p>
  */
@@ -68,56 +68,11 @@ public final class FineMapsScheduler {
     /**
      * Determine whether we're running on Folia.
      *
-     * <p>Do not rely solely on {@code Bukkit.getVersion()} string contents; some builds may omit
-     * the literal "Folia" even when Folia threading/schedulers are present. Use several signals:
-     * server name, version string (case-insensitive), presence of Folia classes, and presence of
-     * Folia scheduler accessors.</p>
+     * <p>Folia scheduler classes and accessors are also present in Paper's API and therefore cannot
+     * be used for runtime detection.</p>
      */
     public static boolean isFolia() {
-        // Fast path: server name
-        try {
-            String name = Bukkit.getName();
-            if (name != null && name.equalsIgnoreCase("Folia")) return true;
-        } catch (Throwable ignored) {
-        }
-        try {
-            if (Bukkit.getServer() != null) {
-                String name = Bukkit.getServer().getName();
-                if (name != null && name.equalsIgnoreCase("Folia")) return true;
-            }
-        } catch (Throwable ignored) {
-        }
-
-        // Version string (case-insensitive)
-        try {
-            String v = Bukkit.getVersion();
-            if (v != null && v.toLowerCase().contains("folia")) return true;
-        } catch (Throwable ignored) {
-        }
-
-        // Presence of Folia classes
-        try {
-            Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
-            return true;
-        } catch (ClassNotFoundException ignored) {
-        } catch (Throwable ignored) {
-        }
-        try {
-            Class.forName("io.papermc.paper.threadedregions.scheduler.GlobalRegionScheduler");
-            return true;
-        } catch (ClassNotFoundException ignored) {
-        } catch (Throwable ignored) {
-        }
-
-        // Presence of Folia scheduler accessors on Bukkit
-        try {
-            Bukkit.class.getMethod("getGlobalRegionScheduler");
-            return true;
-        } catch (NoSuchMethodException ignored) {
-        } catch (Throwable ignored) {
-        }
-
-        return false;
+        return NMSAdapterFactory.isFolia();
     }
 
     public static void runSync(Plugin plugin, Runnable runnable) {
@@ -378,4 +333,3 @@ public final class FineMapsScheduler {
         };
     }
 }
-
