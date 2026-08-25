@@ -12,7 +12,9 @@ import java.util.regex.Pattern;
  */
 public final class NMSAdapterFactory {
 
-    private static final Pattern MINECRAFT_VERSION = Pattern.compile("(?<![0-9])1\\.(\\d+)(?:\\.(\\d+))?(?![0-9])");
+    private static final Pattern MINECRAFT_VERSION = Pattern.compile(
+        "(?<![0-9])(?:1\\.(\\d+)(?:\\.(\\d+))?|((?:2[6-9]|[3-9]\\d))\\.(\\d+)(?:\\.(\\d+))?)(?![0-9])"
+    );
 
     private NMSAdapterFactory() {}
 
@@ -129,8 +131,10 @@ public final class NMSAdapterFactory {
         Matcher matcher = MINECRAFT_VERSION.matcher(version);
         if (!matcher.find()) return null;
         try {
-            int major = Integer.parseInt(matcher.group(1));
-            int minor = matcher.group(2) == null ? 0 : Integer.parseInt(matcher.group(2));
+            boolean legacyVersion = matcher.group(1) != null;
+            int major = Integer.parseInt(matcher.group(legacyVersion ? 1 : 3));
+            String minorGroup = matcher.group(legacyVersion ? 2 : 4);
+            int minor = minorGroup == null ? 0 : Integer.parseInt(minorGroup);
             return new int[] {major, minor};
         } catch (NumberFormatException ignored) {
             return null;
@@ -143,50 +147,28 @@ public final class NMSAdapterFactory {
      * @return true if Folia
      */
     public static boolean isFolia() {
-        // Server name
+        // Folia's scheduler API is also included in Paper, so class or method presence is not a
+        // valid signal. Use only the runtime server identity exposed by Bukkit.
         try {
-            String name = Bukkit.getName();
-            if (name != null && name.equalsIgnoreCase("Folia")) return true;
+            if (isFoliaServer(Bukkit.getName())) return true;
         } catch (Throwable ignored) {
         }
         try {
             if (Bukkit.getServer() != null) {
-                String name = Bukkit.getServer().getName();
-                if (name != null && name.equalsIgnoreCase("Folia")) return true;
+                if (isFoliaServer(Bukkit.getServer().getName())) return true;
             }
         } catch (Throwable ignored) {
         }
 
-        // Version string (case-insensitive)
         try {
-            String v = Bukkit.getVersion();
-            if (v != null && v.toLowerCase().contains("folia")) return true;
+            return isFoliaServer(Bukkit.getVersion());
         } catch (Throwable ignored) {
+            return false;
         }
+    }
 
-        // Presence of Folia classes
-        try {
-            Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
-            return true;
-        } catch (ClassNotFoundException ignored) {
-        } catch (Throwable ignored) {
-        }
-        try {
-            Class.forName("io.papermc.paper.threadedregions.scheduler.GlobalRegionScheduler");
-            return true;
-        } catch (ClassNotFoundException ignored) {
-        } catch (Throwable ignored) {
-        }
-
-        // Presence of Folia scheduler accessors on Bukkit
-        try {
-            Bukkit.class.getMethod("getGlobalRegionScheduler");
-            return true;
-        } catch (NoSuchMethodException ignored) {
-        } catch (Throwable ignored) {
-        }
-
-        return false;
+    static boolean isFoliaServer(String serverIdentity) {
+        return serverIdentity != null && serverIdentity.toLowerCase(java.util.Locale.ROOT).contains("folia");
     }
 
     /**

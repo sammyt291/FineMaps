@@ -97,12 +97,7 @@ public class BukkitNMSAdapter implements NMSAdapter {
     }
 
     private boolean detectFolia() {
-        try {
-            Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
-            return true;
-        } catch (ClassNotFoundException e) {
-            return false;
-        }
+        return NMSAdapterFactory.isFolia();
     }
 
     private boolean detectItemDisplay() {
