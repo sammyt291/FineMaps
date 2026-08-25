@@ -571,25 +571,36 @@ public final class AnimationRegistry {
                     players.remove();
                     continue;
                 }
-                // Drain the complete coalesced frame in this tick. Map packets are independent,
-                // but keeping them in the same server flush prevents adjacent tiles lagging one
-                // or more ticks behind each other on the client.
+                // Treat every coalesced update visible to this player as one transaction. Sending
+                // only the tiles which happen to fit the current token balance makes multi-map art
+                // show parts of two different frames. We therefore price the complete batch first
+                // and send either all of it in this tick or none of it.
+                List<PendingSend> sends = new java.util.ArrayList<>(entry.getValue().size());
+                long payloadBytes = 0L;
                 for (Map.Entry<Integer, byte[]> update : entry.getValue().entrySet()) {
                     int mapId = update.getKey();
                     byte[] pixels = update.getValue();
                     MapViewerKey key = new MapViewerKey(entry.getKey(), mapId);
                     Map<Integer, byte[]> playerBaselines = lastSent.computeIfAbsent(entry.getKey(), ignored -> new HashMap<>());
                     byte[] previous = playerBaselines.get(mapId);
-                    MapPatch patch = forceFullUpdates.remove(key) ? null : MapPatch.between(previous, pixels);
-                    int payloadBytes = patch == null ? pixels.length : patch.pixels().length;
-                    BandwidthLimiter limiter = bandwidthLimiters.computeIfAbsent(entry.getKey(),
-                        ignored -> new BandwidthLimiter(bandwidthBytesPerSecond));
-                    if (!limiter.tryConsume(payloadBytes)) {
-                        // Do not remove this player's pending map updates. Animation enqueue calls
-                        // replace their values with the newest frame, bounding memory and latency.
-                        if (patch == null) forceFullUpdates.add(key);
-                        continue;
-                    }
+                    MapPatch patch = forceFullUpdates.contains(key) ? null : MapPatch.between(previous, pixels);
+                    sends.add(new PendingSend(mapId, pixels, patch, key));
+                    payloadBytes += patch == null ? pixels.length : patch.pixels().length;
+                }
+
+                BandwidthLimiter limiter = bandwidthLimiters.computeIfAbsent(entry.getKey(),
+                    ignored -> new BandwidthLimiter(bandwidthBytesPerSecond));
+                if (!limiter.tryConsume(payloadBytes)) {
+                    // Enqueue calls replace these values with the newest frame while the complete
+                    // batch waits for budget, so there is no unbounded queue and no partial frame.
+                    continue;
+                }
+
+                Map<Integer, byte[]> playerBaselines = lastSent.computeIfAbsent(entry.getKey(), ignored -> new HashMap<>());
+                for (PendingSend send : sends) {
+                    int mapId = send.mapId();
+                    byte[] pixels = send.pixels();
+                    MapPatch patch = send.patch();
                     if (patch == null) {
                         nmsAdapter.sendMapUpdate(player, mapId, pixels);
                     } else if (!patch.isEmpty()) {
@@ -599,12 +610,17 @@ public final class AnimationRegistry {
                     // Frames loaded from the animation cache are immutable, so retaining the reference
                     // avoids a 16 KiB allocation for every map, viewer, and animation frame.
                     playerBaselines.put(mapId, pixels);
+                    forceFullUpdates.remove(send.key());
                 }
                 // Remove only updates whose baseline now matches the pending frame. Entries which
                 // exceeded the token budget stay pending and will be coalesced before the next tick.
                 entry.getValue().entrySet().removeIf(update ->
                     lastSent.getOrDefault(entry.getKey(), java.util.Collections.emptyMap()).get(update.getKey()) == update.getValue());
                 if (entry.getValue().isEmpty()) players.remove();
+            }
+            if (pending.isEmpty() && task != null) {
+                task.cancel();
+                task = null;
             }
             if (pending.isEmpty() && task != null) {
                 task.cancel();
@@ -649,22 +665,33 @@ public final class AnimationRegistry {
 
     private record MapViewerKey(UUID playerId, int mapId) {}
 
+    private record PendingSend(int mapId, byte[] pixels, MapPatch patch, MapViewerKey key) {}
+
     static final class BandwidthLimiter {
         private final long bytesPerSecond;
+        private double capacity;
         private double available;
         private long lastRefillNanos;
 
         BandwidthLimiter(long bytesPerSecond) {
             this.bytesPerSecond = Math.max(1, bytesPerSecond);
-            this.available = this.bytesPerSecond;
+            this.capacity = this.bytesPerSecond;
+            this.available = this.capacity;
             this.lastRefillNanos = System.nanoTime();
         }
 
-        boolean tryConsume(int bytes) {
+        boolean tryConsume(long bytes) {
             long now = System.nanoTime();
-            available = Math.min(bytesPerSecond,
+            available = Math.min(capacity,
                 available + ((now - lastRefillNanos) / 1_000_000_000.0) * bytesPerSecond);
             lastRefillNanos = now;
+            if (bytes > capacity) {
+                // One multi-map frame can legitimately exceed a second's allowance. Increase only
+                // the burst ceiling so that frame can be delivered atomically; refill speed remains
+                // capped, making the next frame wait for the corresponding bandwidth budget.
+                available += bytes - capacity;
+                capacity = bytes;
+            }
             if (bytes > available) return false;
             available -= bytes;
             return true;

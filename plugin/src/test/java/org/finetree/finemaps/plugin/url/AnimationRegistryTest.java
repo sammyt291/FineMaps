@@ -37,9 +37,9 @@ class AnimationRegistryTest {
     }
 
     @Test
-    void bandwidthLimiterRejectsTrafficBeyondItsBurst() {
+    void bandwidthLimiterAllowsOneOversizedAtomicBatchThenThrottles() {
         AnimationRegistry.BandwidthLimiter limiter = new AnimationRegistry.BandwidthLimiter(1024);
-        assertTrue(limiter.tryConsume(1024));
-        assertFalse(limiter.tryConsume(1025));
+        assertTrue(limiter.tryConsume(4096));
+        assertFalse(limiter.tryConsume(4096));
     }
 }
