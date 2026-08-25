@@ -525,10 +525,10 @@ public final class AnimationRegistry {
     }
 
     /**
-     * Coalesces animation updates and applies a strict per-player packet budget. Sending every
-     * tile of a large animation every tick can fill the Netty outbound queue faster than the
-     * client can consume it. Replacing an older pending frame means latency stays bounded: a
-     * slow client sees fewer frames rather than an ever-growing delay followed by a timeout.
+     * Coalesces animation updates before flushing them once per tick. Replacing an older pending
+     * tile keeps latency bounded, while flushing every pending tile for a player together is
+     * important: spreading a multi-map frame over several ticks lets the client display pieces
+     * from different animation frames at the same time, which produces visible tearing.
      */
     private final class MapUpdateDispatcher implements Runnable {
         private final Map<UUID, LinkedHashMap<Integer, byte[]>> pending = new HashMap<>();
@@ -538,7 +538,7 @@ public final class AnimationRegistry {
             if (player == null || !player.isOnline() || vanillaMapId < 0 || pixels == null) return;
             LinkedHashMap<Integer, byte[]> updates = pending.computeIfAbsent(
                 player.getUniqueId(), ignored -> new LinkedHashMap<>());
-            // LinkedHashMap retains the tile's original position, giving all tiles a fair turn.
+            // Preserve tile order so a multi-map frame is sent in a stable order on every flush.
             updates.put(vanillaMapId, pixels);
             if (task == null) {
                 task = FineMapsScheduler.runSyncRepeating(plugin, this, 1L, 1L);
@@ -555,13 +555,13 @@ public final class AnimationRegistry {
                     players.remove();
                     continue;
                 }
-                java.util.Iterator<Map.Entry<Integer, byte[]>> updates = entry.getValue().entrySet().iterator();
-                if (updates.hasNext()) {
-                    Map.Entry<Integer, byte[]> update = updates.next();
-                    updates.remove();
+                // Drain the complete coalesced frame in this tick. Map packets are independent,
+                // but keeping them in the same server flush prevents adjacent tiles lagging one
+                // or more ticks behind each other on the client.
+                for (Map.Entry<Integer, byte[]> update : entry.getValue().entrySet()) {
                     nmsAdapter.sendMapUpdate(player, update.getKey(), update.getValue());
                 }
-                if (entry.getValue().isEmpty()) players.remove();
+                players.remove();
             }
             if (pending.isEmpty()) stop();
         }
