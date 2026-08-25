@@ -100,13 +100,16 @@ public class FineMapsPlugin extends JavaPlugin {
         multiBlockHandler = new MultiBlockMapHandler(this, mapManager);
         String cacheFolder = (config != null && config.getImages() != null) ? config.getImages().getUrlCacheFolder() : "url-cache";
         int animCacheFrames = 32;
+        int animBandwidthPerPlayerKib = 256;
         try {
             if (config != null && config.getImages() != null) {
                 animCacheFrames = config.getImages().getAnimationFrameCacheFrames();
+                animBandwidthPerPlayerKib = config.getImages().getAnimationBandwidthPerPlayerKib();
             }
         } catch (Throwable ignored) {
         }
-        animationRegistry = new AnimationRegistry(this, mapManager, cacheFolder, animCacheFrames);
+        animationRegistry = new AnimationRegistry(this, mapManager, cacheFolder, animCacheFrames,
+            animBandwidthPerPlayerKib);
 
         // Initialize pending map recovery system
         pendingMapRecovery = new PendingMapRecovery(this, mapManager);

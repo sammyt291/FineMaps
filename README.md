@@ -98,6 +98,7 @@ images:
   max-video-frames: 300
   max-animated-frames: 300
   animation-frame-cache-frames: 32
+  animation-bandwidth-per-player-kib: 256
   processor-threads: 0
 
 # Vault economy integration
