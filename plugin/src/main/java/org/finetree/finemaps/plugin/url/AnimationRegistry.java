@@ -612,7 +612,15 @@ public final class AnimationRegistry {
                     playerBaselines.put(mapId, pixels);
                     forceFullUpdates.remove(send.key());
                 }
-                players.remove();
+                // Remove only updates whose baseline now matches the pending frame. Entries which
+                // exceeded the token budget stay pending and will be coalesced before the next tick.
+                entry.getValue().entrySet().removeIf(update ->
+                    lastSent.getOrDefault(entry.getKey(), java.util.Collections.emptyMap()).get(update.getKey()) == update.getValue());
+                if (entry.getValue().isEmpty()) players.remove();
+            }
+            if (pending.isEmpty() && task != null) {
+                task.cancel();
+                task = null;
             }
             if (pending.isEmpty() && task != null) {
                 task.cancel();
