@@ -61,6 +61,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 /**
  * Main command handler for FineMaps.
@@ -1194,12 +1195,12 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                             if (finalWidth == 1 && finalHeight == 1) {
                                 mapManager.createMapFromImageWithName("finemaps", firstFrame, finalRaster, finalArtName).thenAccept(map -> {
                                     giveMapOrQueueRecovery(player, map.getId(), finalArtName);
-                                });
+                                }).exceptionally(error -> reportUrlImportFailure(player, finalArtName, error));
                             } else {
                                 mapManager.createMultiBlockMapWithName("finemaps", firstFrame, finalWidth, finalHeight, finalRaster, finalArtName)
                                     .thenAccept(multiMap -> {
                                         giveMultiBlockMapOrQueueRecovery(player, multiMap.getGroupId(), finalArtName, finalWidth, finalHeight);
-                                    });
+                                    }).exceptionally(error -> reportUrlImportFailure(player, finalArtName, error));
                             }
                             return;
                         }
@@ -1212,7 +1213,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                                 plugin.getAnimationRegistry().registerAndStartSingleFromCache(finalArtName, map.getId(), fpsFinal, urlStr, 1, 1, finalRaster);
                                 plugin.getAnimationRegistry().persistSingleDefinition(finalArtName, urlStr, 1, 1, finalRaster, fpsFinal, map.getId());
                                 giveAnimatedMapOrQueueRecovery(player, map.getId(), -1, finalArtName, 1, 1, fpsFinal, cachedFrameCount);
-                            });
+                            }).exceptionally(error -> reportUrlImportFailure(player, finalArtName, error));
                         } else {
                             mapManager.createMultiBlockMapWithName("finemaps", firstFrame, finalWidth, finalHeight, finalRaster, finalArtName)
                                 .thenAccept(multiMap -> {
@@ -1220,7 +1221,7 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                                     plugin.getAnimationRegistry().registerAndStartMultiFromCache(finalArtName, mapIds, finalWidth, finalHeight, fpsFinal, urlStr, finalRaster);
                                     plugin.getAnimationRegistry().persistMultiDefinition(finalArtName, urlStr, finalWidth, finalHeight, finalRaster, fpsFinal, multiMap.getGroupId());
                                     giveAnimatedMapOrQueueRecovery(player, -1, multiMap.getGroupId(), finalArtName, finalWidth, finalHeight, fpsFinal, cachedFrameCount);
-                                });
+                                }).exceptionally(error -> reportUrlImportFailure(player, finalArtName, error));
                         }
                         return;
                     } else {
@@ -1293,16 +1294,29 @@ public class FineMapsCommand implements CommandExecutor, TabCompleter {
                                 giveAnimatedMapOrQueueRecovery(player, -1, multiMap.getGroupId(), finalArtName, finalWidth, finalHeight, fpsFinal, cachedFrameCount);
                             });
                     }
-                } catch (Exception e) {
-                    FineMapsScheduler.runForEntity(plugin, player, () -> {
-                        if (!player.isOnline()) return;
-                        player.sendMessage(ChatColor.RED + "Error processing image: " + e.getMessage());
-                    });
+                } catch (Throwable error) {
+                    reportUrlImportFailure(player, finalArtName, error);
                 }
             });
-        });
+        }).exceptionally(error -> reportUrlImportFailure(player, finalArtName, error));
 
         return true;
+    }
+
+    private Void reportUrlImportFailure(Player player, String artName, Throwable error) {
+        Throwable cause = error;
+        while ((cause instanceof java.util.concurrent.CompletionException ||
+                cause instanceof java.util.concurrent.ExecutionException) && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        String detail = cause.getMessage();
+        if (detail == null || detail.isBlank()) detail = cause.getClass().getSimpleName();
+        plugin.getLogger().log(Level.SEVERE, "Failed to import URL art '" + artName + "': " + detail, cause);
+        String message = detail;
+        FineMapsScheduler.runForEntity(plugin, player, () -> {
+            if (player.isOnline()) player.sendMessage(ChatColor.RED + "Error processing image: " + message);
+        });
+        return null;
     }
 
     private static final class GifStreamResult {

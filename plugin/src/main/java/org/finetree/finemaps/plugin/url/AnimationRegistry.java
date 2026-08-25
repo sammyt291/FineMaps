@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.LinkedHashMap;
 
 /**
  * Runtime animation playback for maps created from animated images.
@@ -51,6 +52,7 @@ public final class AnimationRegistry {
      */
     private volatile Map<Long, Map<UUID, Set<Integer>>> viewersByDbMapId = new HashMap<>();
     private FineMapsScheduler.Task viewerScanTask = null;
+    private final MapUpdateDispatcher mapUpdates = new MapUpdateDispatcher();
 
     public AnimationRegistry(Plugin plugin, MapManager mapManager, String cacheFolderName, int frameCacheFrames) {
         this.plugin = plugin;
@@ -67,12 +69,13 @@ public final class AnimationRegistry {
         }
         animationsByName.clear();
         stopViewerScan();
+        mapUpdates.stop();
     }
 
     public void registerAndStartSingle(String name, long mapId, int fps, List<byte[]> frames) {
         Animation existing = animationsByName.remove(name);
         if (existing != null) existing.stop();
-        Animation a = Animation.single(plugin, mapManager, () -> viewersByDbMapId, mapId, fps, frames);
+        Animation a = Animation.single(plugin, mapManager, () -> viewersByDbMapId, mapUpdates, mapId, fps, frames);
         animationsByName.put(name, a);
         ensureViewerScan();
         a.start();
@@ -81,7 +84,7 @@ public final class AnimationRegistry {
     public void registerAndStartMulti(String name, List<Long> mapIdsInTileOrder, int width, int height, int fps, List<byte[][]> frames) {
         Animation existing = animationsByName.remove(name);
         if (existing != null) existing.stop();
-        Animation a = Animation.multi(plugin, mapManager, () -> viewersByDbMapId, mapIdsInTileOrder, width, height, fps, frames);
+        Animation a = Animation.multi(plugin, mapManager, () -> viewersByDbMapId, mapUpdates, mapIdsInTileOrder, width, height, fps, frames);
         animationsByName.put(name, a);
         ensureViewerScan();
         a.start();
@@ -198,7 +201,7 @@ public final class AnimationRegistry {
                     if (mapId <= 0) continue;
                     List<byte[]> frames = loadSingleFramesFromCache(url, width, height, raster, fps);
                     if (frames == null || frames.isEmpty()) continue;
-                    Animation a = Animation.single(plugin, mapManager, () -> viewersByDbMapId, mapId, fps, frames);
+                    Animation a = Animation.single(plugin, mapManager, () -> viewersByDbMapId, mapUpdates, mapId, fps, frames);
                     a.restorePlayhead(paused, startEpochMs, offsetMs, pausedPositionMs);
                     Animation existing = animationsByName.put(name, a);
                     if (existing != null) existing.stop();
@@ -216,7 +219,7 @@ public final class AnimationRegistry {
                     if (mapIds == null || mapIds.isEmpty()) continue;
                     List<byte[][]> frames = loadMultiFramesFromCache(url, width, height, raster, fps);
                     if (frames == null || frames.isEmpty()) continue;
-                    Animation a = Animation.multi(plugin, mapManager, () -> viewersByDbMapId, mapIds, width, height, fps, frames);
+                    Animation a = Animation.multi(plugin, mapManager, () -> viewersByDbMapId, mapUpdates, mapIds, width, height, fps, frames);
                     a.restorePlayhead(paused, startEpochMs, offsetMs, pausedPositionMs);
                     Animation existing = animationsByName.put(name, a);
                     if (existing != null) existing.stop();
@@ -521,11 +524,62 @@ public final class AnimationRegistry {
         mapIds.add(vanillaMapId);
     }
 
+    /**
+     * Coalesces animation updates and applies a strict per-player packet budget. Sending every
+     * tile of a large animation every tick can fill the Netty outbound queue faster than the
+     * client can consume it. Replacing an older pending frame means latency stays bounded: a
+     * slow client sees fewer frames rather than an ever-growing delay followed by a timeout.
+     */
+    private final class MapUpdateDispatcher implements Runnable {
+        private final Map<UUID, LinkedHashMap<Integer, byte[]>> pending = new HashMap<>();
+        private FineMapsScheduler.Task task;
+
+        void enqueue(Player player, int vanillaMapId, byte[] pixels) {
+            if (player == null || !player.isOnline() || vanillaMapId < 0 || pixels == null) return;
+            LinkedHashMap<Integer, byte[]> updates = pending.computeIfAbsent(
+                player.getUniqueId(), ignored -> new LinkedHashMap<>());
+            // LinkedHashMap retains the tile's original position, giving all tiles a fair turn.
+            updates.put(vanillaMapId, pixels);
+            if (task == null) {
+                task = FineMapsScheduler.runSyncRepeating(plugin, this, 1L, 1L);
+            }
+        }
+
+        @Override
+        public void run() {
+            java.util.Iterator<Map.Entry<UUID, LinkedHashMap<Integer, byte[]>>> players = pending.entrySet().iterator();
+            while (players.hasNext()) {
+                Map.Entry<UUID, LinkedHashMap<Integer, byte[]>> entry = players.next();
+                Player player = Bukkit.getPlayer(entry.getKey());
+                if (player == null || !player.isOnline()) {
+                    players.remove();
+                    continue;
+                }
+                java.util.Iterator<Map.Entry<Integer, byte[]>> updates = entry.getValue().entrySet().iterator();
+                if (updates.hasNext()) {
+                    Map.Entry<Integer, byte[]> update = updates.next();
+                    updates.remove();
+                    nmsAdapter.sendMapUpdate(player, update.getKey(), update.getValue());
+                }
+                if (entry.getValue().isEmpty()) players.remove();
+            }
+            if (pending.isEmpty()) stop();
+        }
+
+        void stop() {
+            if (task != null) {
+                task.cancel();
+                task = null;
+            }
+            pending.clear();
+        }
+    }
+
     private static final class Animation implements Runnable {
         private final Plugin plugin;
         private final MapManager mapManager;
-        private final NMSAdapter nmsAdapter;
         private final java.util.function.Supplier<Map<Long, Map<UUID, Set<Integer>>>> viewersSupplier;
+        private final MapUpdateDispatcher mapUpdates;
         private final int fps;
         private final double frameDurationMs;
 
@@ -549,6 +603,7 @@ public final class AnimationRegistry {
         private Animation(Plugin plugin,
                           MapManager mapManager,
                           java.util.function.Supplier<Map<Long, Map<UUID, Set<Integer>>>> viewersSupplier,
+                          MapUpdateDispatcher mapUpdates,
                           int fps,
                           boolean isMulti,
                           long singleMapId,
@@ -559,8 +614,8 @@ public final class AnimationRegistry {
                           List<byte[][]> multiFrames) {
             this.plugin = plugin;
             this.mapManager = mapManager;
-            this.nmsAdapter = mapManager.getNmsAdapter();
             this.viewersSupplier = viewersSupplier != null ? viewersSupplier : java.util.Collections::emptyMap;
+            this.mapUpdates = mapUpdates;
             this.fps = Math.max(1, Math.min(20, fps));
             this.frameDurationMs = 1000.0 / this.fps;
             this.isMulti = isMulti;
@@ -575,21 +630,23 @@ public final class AnimationRegistry {
         static Animation single(Plugin plugin,
                                 MapManager mapManager,
                                 java.util.function.Supplier<Map<Long, Map<UUID, Set<Integer>>>> viewersSupplier,
+                                MapUpdateDispatcher mapUpdates,
                                 long mapId,
                                 int fps,
                                 List<byte[]> frames) {
-            return new Animation(plugin, mapManager, viewersSupplier, fps, false, mapId, frames, null, 0, 0, null);
+            return new Animation(plugin, mapManager, viewersSupplier, mapUpdates, fps, false, mapId, frames, null, 0, 0, null);
         }
 
         static Animation multi(Plugin plugin,
                                MapManager mapManager,
                                java.util.function.Supplier<Map<Long, Map<UUID, Set<Integer>>>> viewersSupplier,
+                               MapUpdateDispatcher mapUpdates,
                                List<Long> mapIdsInTileOrder,
                                int width,
                                int height,
                                int fps,
                                List<byte[][]> frames) {
-            return new Animation(plugin, mapManager, viewersSupplier, fps, true, -1L, null, mapIdsInTileOrder, width, height, frames);
+            return new Animation(plugin, mapManager, viewersSupplier, mapUpdates, fps, true, -1L, null, mapIdsInTileOrder, width, height, frames);
         }
 
         void start() {
@@ -769,7 +826,7 @@ public final class AnimationRegistry {
                 if (vanillaIds == null || vanillaIds.isEmpty()) continue;
                 for (Integer vanillaMapId : vanillaIds) {
                     if (vanillaMapId == null || vanillaMapId < 0) continue;
-                    nmsAdapter.sendMapUpdate(p, vanillaMapId, pixels);
+                    mapUpdates.enqueue(p, vanillaMapId, pixels);
                 }
             }
         }
@@ -804,7 +861,7 @@ public final class AnimationRegistry {
 
             // Ensure our runtime pixel cache/renderer is in sync, then push to the client.
             mapManager.updateMapPixelsRuntime(dbMapId, pixels);
-            nmsAdapter.sendMapUpdate(player, vanillaMapId, pixels);
+            mapUpdates.enqueue(player, vanillaMapId, pixels);
         }
 
         private static final class PlayheadSnapshot {
@@ -1027,4 +1084,3 @@ public final class AnimationRegistry {
         return out;
     }
 }
-
