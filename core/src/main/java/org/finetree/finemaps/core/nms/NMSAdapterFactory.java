@@ -4,11 +4,15 @@ import org.finetree.finemaps.api.nms.NMSAdapter;
 import org.bukkit.Bukkit;
 
 import java.util.logging.Logger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Factory for creating version-specific NMS adapters.
  */
 public final class NMSAdapterFactory {
+
+    private static final Pattern MINECRAFT_VERSION = Pattern.compile("(?<![0-9])1\\.(\\d+)(?:\\.(\\d+))?(?![0-9])");
 
     private NMSAdapterFactory() {}
 
@@ -69,14 +73,10 @@ public final class NMSAdapterFactory {
             return packageName.substring(packageName.lastIndexOf('.') + 1);
         }
         
-        // Fall back to Bukkit version for newer servers
-        String bukkitVersion = Bukkit.getBukkitVersion();
-        // Format: "1.21.1-R0.1-SNAPSHOT"
-        int dash = bukkitVersion.indexOf('-');
-        if (dash > 0) {
-            return bukkitVersion.substring(0, dash);
-        }
-        return bukkitVersion;
+        // Fall back to the Minecraft version reported by the API. Some server forks use
+        // their own release number for getBukkitVersion(), so that value is not reliable.
+        String minecraftVersion = getMinecraftVersion();
+        return minecraftVersion != null ? minecraftVersion : Bukkit.getBukkitVersion();
     }
 
     /**
@@ -85,17 +85,7 @@ public final class NMSAdapterFactory {
      * @return Major version number
      */
     public static int getMajorVersion() {
-        String version = Bukkit.getBukkitVersion();
-        // Format: "1.21.1-R0.1-SNAPSHOT"
-        String[] parts = version.split("[.-]");
-        if (parts.length >= 2) {
-            try {
-                return Integer.parseInt(parts[1]);
-            } catch (NumberFormatException e) {
-                return 0;
-            }
-        }
-        return 0;
+        return getVersionComponent(0);
     }
 
     /**
@@ -104,16 +94,47 @@ public final class NMSAdapterFactory {
      * @return Minor version number
      */
     public static int getMinorVersion() {
-        String version = Bukkit.getBukkitVersion();
-        String[] parts = version.split("[.-]");
-        if (parts.length >= 3) {
-            try {
-                return Integer.parseInt(parts[2]);
-            } catch (NumberFormatException e) {
-                return 0;
+        return getVersionComponent(1);
+    }
+
+    private static int getVersionComponent(int index) {
+        int[] version = parseMinecraftVersion(getMinecraftVersion());
+        return version == null ? 0 : version[index];
+    }
+
+    /**
+     * Returns the actual game version, rather than a fork-specific distribution version.
+     */
+    public static String getMinecraftVersion() {
+        try {
+            String version = Bukkit.getMinecraftVersion();
+            if (parseMinecraftVersion(version) != null) return version;
+        } catch (Throwable ignored) {
+            // Retain compatibility with API implementations that do not expose this method.
+        }
+
+        String[] fallbackVersions = {Bukkit.getBukkitVersion(), Bukkit.getVersion()};
+        for (String version : fallbackVersions) {
+            int[] parsed = parseMinecraftVersion(version);
+            if (parsed != null) {
+                Matcher matcher = MINECRAFT_VERSION.matcher(version);
+                if (matcher.find()) return matcher.group();
             }
         }
-        return 0;
+        return null;
+    }
+
+    static int[] parseMinecraftVersion(String version) {
+        if (version == null) return null;
+        Matcher matcher = MINECRAFT_VERSION.matcher(version);
+        if (!matcher.find()) return null;
+        try {
+            int major = Integer.parseInt(matcher.group(1));
+            int minor = matcher.group(2) == null ? 0 : Integer.parseInt(matcher.group(2));
+            return new int[] {major, minor};
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     /**
