@@ -39,6 +39,7 @@ public final class AnimationRegistry {
     private final NMSAdapter nmsAdapter;
     private final String cacheFolderName;
     private final int frameCacheFrames;
+    private final long bandwidthBytesPerSecond;
 
     private final File persistFile;
     private final AtomicBoolean loadedPersisted = new AtomicBoolean(false);
@@ -55,12 +56,14 @@ public final class AnimationRegistry {
     private FineMapsScheduler.Task viewerScanTask = null;
     private final MapUpdateDispatcher mapUpdates = new MapUpdateDispatcher();
 
-    public AnimationRegistry(Plugin plugin, MapManager mapManager, String cacheFolderName, int frameCacheFrames) {
+    public AnimationRegistry(Plugin plugin, MapManager mapManager, String cacheFolderName, int frameCacheFrames,
+                             int bandwidthPerPlayerKib) {
         this.plugin = plugin;
         this.mapManager = mapManager;
         this.nmsAdapter = mapManager.getNmsAdapter();
         this.cacheFolderName = (cacheFolderName != null && !cacheFolderName.isBlank()) ? cacheFolderName : "url-cache";
         this.frameCacheFrames = Math.max(0, frameCacheFrames);
+        this.bandwidthBytesPerSecond = Math.max(16L, bandwidthPerPlayerKib) * 1024L;
         this.persistFile = new File(plugin.getDataFolder(), "animations.yml");
     }
 
@@ -350,6 +353,7 @@ public final class AnimationRegistry {
 
         // Swap in the index first (so Animation pushes see the latest viewers).
         viewersByDbMapId = next;
+        mapUpdates.retainViewers(next);
 
         // Immediately push the current frame to newly-added viewers.
         // This fixes the "invisible until you pick up / re-place" behavior after restarts,
@@ -461,6 +465,7 @@ public final class AnimationRegistry {
 
         // Swap in the new index
         viewersByDbMapId = converted;
+        mapUpdates.retainViewers(converted);
 
         // Push current frames to newly-added viewers
         if (prev != null && !prev.isEmpty()) {
@@ -535,13 +540,14 @@ public final class AnimationRegistry {
         private final Map<UUID, LinkedHashMap<Integer, byte[]>> pending = new HashMap<>();
         private final Map<UUID, Map<Integer, byte[]>> lastSent = new HashMap<>();
         private final Set<MapViewerKey> forceFullUpdates = new HashSet<>();
+        private final Map<UUID, BandwidthLimiter> bandwidthLimiters = new HashMap<>();
         private FineMapsScheduler.Task task;
 
-        void enqueue(Player player, int vanillaMapId, byte[] pixels) {
+        synchronized void enqueue(Player player, int vanillaMapId, byte[] pixels) {
             enqueue(player, vanillaMapId, pixels, false);
         }
 
-        void enqueue(Player player, int vanillaMapId, byte[] pixels, boolean forceFull) {
+        synchronized void enqueue(Player player, int vanillaMapId, byte[] pixels, boolean forceFull) {
             if (player == null || !player.isOnline() || vanillaMapId < 0 || pixels == null) return;
             UUID playerId = player.getUniqueId();
             LinkedHashMap<Integer, byte[]> updates = pending.computeIfAbsent(playerId, ignored -> new LinkedHashMap<>());
@@ -554,7 +560,7 @@ public final class AnimationRegistry {
         }
 
         @Override
-        public void run() {
+        public synchronized void run() {
             java.util.Iterator<Map.Entry<UUID, LinkedHashMap<Integer, byte[]>>> players = pending.entrySet().iterator();
             while (players.hasNext()) {
                 Map.Entry<UUID, LinkedHashMap<Integer, byte[]>> entry = players.next();
@@ -575,6 +581,15 @@ public final class AnimationRegistry {
                     Map<Integer, byte[]> playerBaselines = lastSent.computeIfAbsent(entry.getKey(), ignored -> new HashMap<>());
                     byte[] previous = playerBaselines.get(mapId);
                     MapPatch patch = forceFullUpdates.remove(key) ? null : MapPatch.between(previous, pixels);
+                    int payloadBytes = patch == null ? pixels.length : patch.pixels().length;
+                    BandwidthLimiter limiter = bandwidthLimiters.computeIfAbsent(entry.getKey(),
+                        ignored -> new BandwidthLimiter(bandwidthBytesPerSecond));
+                    if (!limiter.tryConsume(payloadBytes)) {
+                        // Do not remove this player's pending map updates. Animation enqueue calls
+                        // replace their values with the newest frame, bounding memory and latency.
+                        if (patch == null) forceFullUpdates.add(key);
+                        continue;
+                    }
                     if (patch == null) {
                         nmsAdapter.sendMapUpdate(player, mapId, pixels);
                     } else if (!patch.isEmpty()) {
@@ -585,7 +600,11 @@ public final class AnimationRegistry {
                     // avoids a 16 KiB allocation for every map, viewer, and animation frame.
                     playerBaselines.put(mapId, pixels);
                 }
-                players.remove();
+                // Remove only updates whose baseline now matches the pending frame. Entries which
+                // exceeded the token budget stay pending and will be coalesced before the next tick.
+                entry.getValue().entrySet().removeIf(update ->
+                    lastSent.getOrDefault(entry.getKey(), java.util.Collections.emptyMap()).get(update.getKey()) == update.getValue());
+                if (entry.getValue().isEmpty()) players.remove();
             }
             if (pending.isEmpty() && task != null) {
                 task.cancel();
@@ -593,7 +612,7 @@ public final class AnimationRegistry {
             }
         }
 
-        void stop() {
+        synchronized void stop() {
             if (task != null) {
                 task.cancel();
                 task = null;
@@ -601,10 +620,56 @@ public final class AnimationRegistry {
             pending.clear();
             lastSent.clear();
             forceFullUpdates.clear();
+            bandwidthLimiters.clear();
+        }
+
+        synchronized void retainViewers(Map<Long, Map<UUID, Set<Integer>>> viewers) {
+            Set<MapViewerKey> retained = new HashSet<>();
+            if (viewers != null) {
+                for (Map<UUID, Set<Integer>> byPlayer : viewers.values()) {
+                    for (Map.Entry<UUID, Set<Integer>> player : byPlayer.entrySet()) {
+                        for (Integer mapId : player.getValue()) {
+                            retained.add(new MapViewerKey(player.getKey(), mapId));
+                        }
+                    }
+                }
+            }
+            lastSent.entrySet().removeIf(player -> {
+                player.getValue().keySet().removeIf(mapId -> !retained.contains(new MapViewerKey(player.getKey(), mapId)));
+                return player.getValue().isEmpty();
+            });
+            pending.entrySet().removeIf(player -> {
+                player.getValue().keySet().removeIf(mapId -> !retained.contains(new MapViewerKey(player.getKey(), mapId)));
+                return player.getValue().isEmpty();
+            });
+            forceFullUpdates.retainAll(retained);
+            bandwidthLimiters.keySet().retainAll(retained.stream().map(MapViewerKey::playerId).collect(java.util.stream.Collectors.toSet()));
         }
     }
 
     private record MapViewerKey(UUID playerId, int mapId) {}
+
+    static final class BandwidthLimiter {
+        private final long bytesPerSecond;
+        private double available;
+        private long lastRefillNanos;
+
+        BandwidthLimiter(long bytesPerSecond) {
+            this.bytesPerSecond = Math.max(1, bytesPerSecond);
+            this.available = this.bytesPerSecond;
+            this.lastRefillNanos = System.nanoTime();
+        }
+
+        boolean tryConsume(int bytes) {
+            long now = System.nanoTime();
+            available = Math.min(bytesPerSecond,
+                available + ((now - lastRefillNanos) / 1_000_000_000.0) * bytesPerSecond);
+            lastRefillNanos = now;
+            if (bytes > available) return false;
+            available -= bytes;
+            return true;
+        }
+    }
 
     /** A minimal rectangular Minecraft map patch between two complete 128x128 frames. */
     static record MapPatch(int startX, int startY, int width, int height, byte[] pixels) {

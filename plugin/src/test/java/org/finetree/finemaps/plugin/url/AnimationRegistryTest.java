@@ -35,4 +35,11 @@ class AnimationRegistryTest {
         assertNull(AnimationRegistry.MapPatch.between(null, new byte[128 * 128]));
         assertNull(AnimationRegistry.MapPatch.between(new byte[4], new byte[128 * 128]));
     }
+
+    @Test
+    void bandwidthLimiterRejectsTrafficBeyondItsBurst() {
+        AnimationRegistry.BandwidthLimiter limiter = new AnimationRegistry.BandwidthLimiter(1024);
+        assertTrue(limiter.tryConsume(1024));
+        assertFalse(limiter.tryConsume(1025));
+    }
 }
