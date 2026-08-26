@@ -41,6 +41,21 @@ public interface NMSAdapter {
                                int width, int height, byte[] pixels);
 
     /**
+     * Returns whether the player's underlying network channel currently accepts more writes.
+     * Adapters which cannot inspect the channel conservatively report writable.
+     */
+    default boolean isConnectionWritable(Player player) {
+        return true;
+    }
+
+    /**
+     * Returns the channel's remaining writable capacity, or {@link Long#MAX_VALUE} when unknown.
+     */
+    default long bytesBeforeUnwritable(Player player) {
+        return Long.MAX_VALUE;
+    }
+
+    /**
      * Creates a map ItemStack with the given map ID.
      *
      * @param mapId The map ID

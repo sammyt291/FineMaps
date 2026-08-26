@@ -101,15 +101,17 @@ public class FineMapsPlugin extends JavaPlugin {
         String cacheFolder = (config != null && config.getImages() != null) ? config.getImages().getUrlCacheFolder() : "url-cache";
         int animCacheFrames = 32;
         int animBandwidthPerPlayerKib = 256;
+        int animMaxBurstKib = 64;
         try {
             if (config != null && config.getImages() != null) {
                 animCacheFrames = config.getImages().getAnimationFrameCacheFrames();
                 animBandwidthPerPlayerKib = config.getImages().getAnimationBandwidthPerPlayerKib();
+                animMaxBurstKib = config.getImages().getAnimationMaxBurstKib();
             }
         } catch (Throwable ignored) {
         }
         animationRegistry = new AnimationRegistry(this, mapManager, cacheFolder, animCacheFrames,
-            animBandwidthPerPlayerKib);
+            animBandwidthPerPlayerKib, animMaxBurstKib);
 
         // Initialize pending map recovery system
         pendingMapRecovery = new PendingMapRecovery(this, mapManager);

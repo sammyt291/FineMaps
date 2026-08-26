@@ -40,6 +40,7 @@ public final class AnimationRegistry {
     private final String cacheFolderName;
     private final int frameCacheFrames;
     private final long bandwidthBytesPerSecond;
+    private final long maxBurstBytes;
 
     private final File persistFile;
     private final AtomicBoolean loadedPersisted = new AtomicBoolean(false);
@@ -57,13 +58,14 @@ public final class AnimationRegistry {
     private final MapUpdateDispatcher mapUpdates = new MapUpdateDispatcher();
 
     public AnimationRegistry(Plugin plugin, MapManager mapManager, String cacheFolderName, int frameCacheFrames,
-                             int bandwidthPerPlayerKib) {
+                             int bandwidthPerPlayerKib, int maxBurstKib) {
         this.plugin = plugin;
         this.mapManager = mapManager;
         this.nmsAdapter = mapManager.getNmsAdapter();
         this.cacheFolderName = (cacheFolderName != null && !cacheFolderName.isBlank()) ? cacheFolderName : "url-cache";
         this.frameCacheFrames = Math.max(0, frameCacheFrames);
         this.bandwidthBytesPerSecond = Math.max(16L, bandwidthPerPlayerKib) * 1024L;
+        this.maxBurstBytes = Math.max(16L, maxBurstKib) * 1024L;
         this.persistFile = new File(plugin.getDataFolder(), "animations.yml");
     }
 
@@ -532,9 +534,8 @@ public final class AnimationRegistry {
 
     /**
      * Coalesces animation updates before flushing them once per tick. Replacing an older pending
-     * tile keeps latency bounded, while flushing every pending tile for a player together is
-     * important: spreading a multi-map frame over several ticks lets the client display pieces
-     * from different animation frames at the same time, which produces visible tearing.
+     * tile keeps latency bounded. A strict per-tick burst ceiling deliberately spreads large walls
+     * across ticks so map traffic cannot monopolize the player's ordered connection.
      */
     private final class MapUpdateDispatcher implements Runnable {
         /*
@@ -546,6 +547,7 @@ public final class AnimationRegistry {
         private final Map<UUID, Map<Integer, byte[]>> lastSent = new HashMap<>();
         private final Set<MapViewerKey> forceFullUpdates = new HashSet<>();
         private final Map<UUID, BandwidthLimiter> bandwidthLimiters = new HashMap<>();
+        private final TileContentCache tileCache = new TileContentCache(5000);
         private FineMapsScheduler.Task task;
 
         synchronized void enqueue(Player player, Object animationKey, int vanillaMapId, byte[] pixels) {
@@ -554,6 +556,7 @@ public final class AnimationRegistry {
 
         synchronized void enqueue(Player player, Object animationKey, int vanillaMapId, byte[] pixels, boolean forceFull) {
             if (player == null || !player.isOnline() || vanillaMapId < 0 || pixels == null) return;
+            pixels = tileCache.canonicalize(pixels);
             UUID playerId = player.getUniqueId();
             LinkedHashMap<Object, LinkedHashMap<Integer, byte[]>> animations =
                 pending.computeIfAbsent(playerId, ignored -> new LinkedHashMap<>());
@@ -584,53 +587,55 @@ public final class AnimationRegistry {
                     players.remove();
                     continue;
                 }
+                // Successful packet encoding only queues work in Netty. Never add map traffic while
+                // the ordered gameplay connection is applying backpressure.
+                if (!nmsAdapter.isConnectionWritable(player)) {
+                    continue;
+                }
                 // The first entry is the oldest waiting animation. A successful send removes it,
                 // naturally moving the next wall to the front and preventing a busy wall from
                 // starving the others.
                 Map.Entry<Object, LinkedHashMap<Integer, byte[]>> animation =
                     entry.getValue().entrySet().iterator().next();
                 LinkedHashMap<Integer, byte[]> updates = animation.getValue();
-                List<PendingSend> sends = new java.util.ArrayList<>(updates.size());
-                long payloadBytes = 0L;
-                for (Map.Entry<Integer, byte[]> update : updates.entrySet()) {
+                BandwidthLimiter limiter = bandwidthLimiters.computeIfAbsent(entry.getKey(),
+                    ignored -> new BandwidthLimiter(bandwidthBytesPerSecond, maxBurstBytes));
+                long tickBytes = 0L;
+                java.util.Iterator<Map.Entry<Integer, byte[]>> updateIterator = updates.entrySet().iterator();
+                while (updateIterator.hasNext()) {
+                    Map.Entry<Integer, byte[]> update = updateIterator.next();
                     int mapId = update.getKey();
                     byte[] pixels = update.getValue();
                     MapViewerKey key = new MapViewerKey(entry.getKey(), mapId);
                     Map<Integer, byte[]> playerBaselines = lastSent.computeIfAbsent(entry.getKey(), ignored -> new HashMap<>());
                     byte[] previous = playerBaselines.get(mapId);
-                    MapPatch patch = forceFullUpdates.contains(key) ? null : MapPatch.between(previous, pixels);
-                    sends.add(new PendingSend(mapId, pixels, patch, key));
-                    payloadBytes += patch == null ? pixels.length : patch.pixels().length;
-                }
-
-                BandwidthLimiter limiter = bandwidthLimiters.computeIfAbsent(entry.getKey(),
-                    ignored -> new BandwidthLimiter(bandwidthBytesPerSecond));
-                if (!limiter.tryConsume(payloadBytes)) {
-                    // Enqueue calls replace these values with the newest frame while the complete
-                    // batch waits for budget, so there is no unbounded queue and no partial frame.
-                    continue;
-                }
-
-                Map<Integer, byte[]> playerBaselines = lastSent.computeIfAbsent(entry.getKey(), ignored -> new HashMap<>());
-                for (PendingSend send : sends) {
-                    int mapId = send.mapId();
-                    byte[] pixels = send.pixels();
-                    MapPatch patch = send.patch();
-                    if (patch == null) {
-                        nmsAdapter.sendMapUpdate(player, mapId, pixels);
-                    } else if (!patch.isEmpty()) {
-                        nmsAdapter.sendPartialMapUpdate(player, mapId, patch.startX(), patch.startY(),
-                            patch.width(), patch.height(), patch.pixels());
+                    int effectiveResolution = forceFullUpdates.contains(key) ? 128
+                        : AdaptiveQuality.effectiveResolution(previous, pixels, limiter.availableRatio(),
+                            nmsAdapter.bytesBeforeUnwritable(player));
+                    byte[] desired = AdaptiveQuality.reduceResolution(pixels, effectiveResolution);
+                    PatchPlan plan = forceFullUpdates.contains(key) ? PatchPlan.full(desired) : PatchPlan.between(previous, desired);
+                    if (plan.payloadBytes() == 0) {
+                        playerBaselines.put(mapId, desired);
+                        forceFullUpdates.remove(key);
+                        updateIterator.remove();
+                        continue;
                     }
-                    // Frames loaded from the animation cache are immutable, so retaining the reference
-                    // avoids a 16 KiB allocation for every map, viewer, and animation frame.
-                    playerBaselines.put(mapId, pixels);
-                    forceFullUpdates.remove(send.key());
+                    if (tickBytes + plan.payloadBytes() > maxBurstBytes || !limiter.tryConsume(plan.payloadBytes())) {
+                        break;
+                    }
+                    if (plan.full()) {
+                        nmsAdapter.sendMapUpdate(player, mapId, desired);
+                    } else {
+                        for (MapPatch patch : plan.patches()) {
+                            nmsAdapter.sendPartialMapUpdate(player, mapId, patch.startX(), patch.startY(),
+                                patch.width(), patch.height(), patch.pixels());
+                        }
+                    }
+                    playerBaselines.put(mapId, desired);
+                    forceFullUpdates.remove(key);
+                    tickBytes += plan.payloadBytes();
+                    updateIterator.remove();
                 }
-                // Remove only updates whose baseline now matches the pending frame. Entries which
-                // exceeded the token budget stay pending and will be coalesced before the next tick.
-                updates.entrySet().removeIf(update ->
-                    lastSent.getOrDefault(entry.getKey(), java.util.Collections.emptyMap()).get(update.getKey()) == update.getValue());
                 if (updates.isEmpty()) entry.getValue().remove(animation.getKey());
                 if (entry.getValue().isEmpty()) players.remove();
             }
@@ -649,6 +654,7 @@ public final class AnimationRegistry {
             lastSent.clear();
             forceFullUpdates.clear();
             bandwidthLimiters.clear();
+            tileCache.clear();
         }
 
         synchronized void retainViewers(Map<Long, Map<UUID, Set<Integer>>> viewers) {
@@ -679,7 +685,58 @@ public final class AnimationRegistry {
 
     private record MapViewerKey(UUID playerId, int mapId) {}
 
-    private record PendingSend(int mapId, byte[] pixels, MapPatch patch, MapViewerKey key) {}
+    /**
+     * Content-addressable LRU for immutable palette tiles. Pending and visible baselines retain
+     * strong references (pinning them naturally), while old unreferenced loop states age out.
+     */
+    static final class TileContentCache {
+        private final int capacity;
+        private final LinkedHashMap<TileKey, byte[]> entries;
+
+        TileContentCache(int capacity) {
+            this.capacity = Math.max(1, capacity);
+            this.entries = new LinkedHashMap<>(16, 0.75f, true);
+        }
+
+        synchronized byte[] canonicalize(byte[] pixels) {
+            TileKey lookup = new TileKey(pixels);
+            byte[] cached = entries.get(lookup);
+            if (cached != null) return cached;
+            entries.put(lookup, pixels);
+            while (entries.size() > capacity) {
+                entries.remove(entries.entrySet().iterator().next().getKey());
+            }
+            return pixels;
+        }
+
+        synchronized int size() {
+            return entries.size();
+        }
+
+        synchronized void clear() {
+            entries.clear();
+        }
+
+        private static final class TileKey {
+            private final byte[] pixels;
+            private final int hash;
+
+            private TileKey(byte[] pixels) {
+                this.pixels = pixels;
+                this.hash = Arrays.hashCode(pixels);
+            }
+
+            @Override
+            public int hashCode() {
+                return hash;
+            }
+
+            @Override
+            public boolean equals(Object other) {
+                return other instanceof TileKey key && Arrays.equals(pixels, key.pixels);
+            }
+        }
+    }
 
     static final class BandwidthLimiter {
         private final long bytesPerSecond;
@@ -687,9 +744,9 @@ public final class AnimationRegistry {
         private double available;
         private long lastRefillNanos;
 
-        BandwidthLimiter(long bytesPerSecond) {
+        BandwidthLimiter(long bytesPerSecond, long maxBurstBytes) {
             this.bytesPerSecond = Math.max(1, bytesPerSecond);
-            this.capacity = this.bytesPerSecond;
+            this.capacity = Math.max(1, maxBurstBytes);
             this.available = this.capacity;
             this.lastRefillNanos = System.nanoTime();
         }
@@ -699,16 +756,51 @@ public final class AnimationRegistry {
             available = Math.min(capacity,
                 available + ((now - lastRefillNanos) / 1_000_000_000.0) * bytesPerSecond);
             lastRefillNanos = now;
-            if (bytes > capacity) {
-                // One multi-map frame can legitimately exceed a second's allowance. Increase only
-                // the burst ceiling so that frame can be delivered atomically; refill speed remains
-                // capped, making the next frame wait for the corresponding bandwidth budget.
-                available += bytes - capacity;
-                capacity = bytes;
-            }
+            if (bytes > capacity) return false;
             if (bytes > available) return false;
             available -= bytes;
             return true;
+        }
+
+        double availableRatio() {
+            return capacity <= 0 ? 0 : available / capacity;
+        }
+    }
+
+    /** Spatial adaptation driven by palette-byte motion and current connection pressure. */
+    static final class AdaptiveQuality {
+        private AdaptiveQuality() {}
+
+        static int effectiveResolution(byte[] previous, byte[] desired, double availableRatio,
+                                       long bytesBeforeUnwritable) {
+            double changed = changedRatio(previous, desired);
+            if (bytesBeforeUnwritable < 32 * 1024L || availableRatio < 0.10) return 32;
+            if (bytesBeforeUnwritable < 64 * 1024L || availableRatio < 0.30 || changed > 0.80) return 64;
+            if (availableRatio < 0.60 || changed > 0.45) return 96;
+            return 128;
+        }
+
+        static double changedRatio(byte[] previous, byte[] desired) {
+            if (previous == null || desired == null || previous.length != desired.length) return 1.0;
+            int changed = 0;
+            for (int i = 0; i < desired.length; i++) if (previous[i] != desired[i]) changed++;
+            return changed / (double) desired.length;
+        }
+
+        static byte[] reduceResolution(byte[] pixels, int resolution) {
+            if (resolution >= 128) return pixels;
+            int size = Math.max(1, Math.min(128, resolution));
+            byte[] reduced = new byte[pixels.length];
+            for (int y = 0; y < 128; y++) {
+                int cellY = y * size / 128;
+                int sampleY = Math.min(127, (cellY * 128 + 64) / size);
+                for (int x = 0; x < 128; x++) {
+                    int cellX = x * size / 128;
+                    int sampleX = Math.min(127, (cellX * 128 + 64) / size);
+                    reduced[y * 128 + x] = pixels[sampleY * 128 + sampleX];
+                }
+            }
+            return reduced;
         }
     }
 
@@ -749,6 +841,83 @@ public final class AnimationRegistry {
 
         boolean isEmpty() {
             return width == 0 || height == 0;
+        }
+    }
+
+    /** Chooses the cheapest of a full tile, one bounding box, or merged 16x16 dirty regions. */
+    static record PatchPlan(boolean full, List<MapPatch> patches, long payloadBytes) {
+        private static final int MAP_SIZE = 128;
+        private static final int BLOCK_SIZE = 16;
+        private static final int PACKET_PENALTY = 24;
+
+        static PatchPlan full(byte[] pixels) {
+            return new PatchPlan(true, java.util.Collections.emptyList(), pixels.length);
+        }
+
+        static PatchPlan between(byte[] previous, byte[] current) {
+            MapPatch bounding = MapPatch.between(previous, current);
+            if (bounding == null) return full(current);
+            if (bounding.isEmpty()) return new PatchPlan(false, java.util.Collections.emptyList(), 0);
+
+            List<MapPatch> regions = dirtyRegions(previous, current);
+            long regionCost = cost(regions);
+            long boundingCost = bounding.pixels().length + PACKET_PENALTY;
+            long fullCost = current.length + PACKET_PENALTY;
+            if (fullCost <= boundingCost && fullCost <= regionCost) return full(current);
+            if (boundingCost <= regionCost) {
+                return new PatchPlan(false, List.of(bounding), bounding.pixels().length);
+            }
+            return new PatchPlan(false, regions, pixelBytes(regions));
+        }
+
+        private static List<MapPatch> dirtyRegions(byte[] previous, byte[] current) {
+            boolean[][] dirty = new boolean[MAP_SIZE / BLOCK_SIZE][MAP_SIZE / BLOCK_SIZE];
+            for (int index = 0; index < current.length; index++) {
+                if (previous[index] != current[index]) {
+                    dirty[(index / MAP_SIZE) / BLOCK_SIZE][(index % MAP_SIZE) / BLOCK_SIZE] = true;
+                }
+            }
+            List<MapPatch> result = new java.util.ArrayList<>();
+            boolean[][] used = new boolean[dirty.length][dirty[0].length];
+            for (int blockY = 0; blockY < dirty.length; blockY++) {
+                for (int blockX = 0; blockX < dirty[blockY].length; blockX++) {
+                    if (!dirty[blockY][blockX] || used[blockY][blockX]) continue;
+                    int blocksWide = 1;
+                    while (blockX + blocksWide < dirty[blockY].length
+                        && dirty[blockY][blockX + blocksWide] && !used[blockY][blockX + blocksWide]) blocksWide++;
+                    int blocksHigh = 1;
+                    height: while (blockY + blocksHigh < dirty.length) {
+                        for (int x = blockX; x < blockX + blocksWide; x++) {
+                            if (!dirty[blockY + blocksHigh][x] || used[blockY + blocksHigh][x]) break height;
+                        }
+                        blocksHigh++;
+                    }
+                    for (int y = blockY; y < blockY + blocksHigh; y++) {
+                        for (int x = blockX; x < blockX + blocksWide; x++) used[y][x] = true;
+                    }
+                    result.add(extract(current, blockX * BLOCK_SIZE, blockY * BLOCK_SIZE,
+                        blocksWide * BLOCK_SIZE, blocksHigh * BLOCK_SIZE));
+                }
+            }
+            return result;
+        }
+
+        private static MapPatch extract(byte[] pixels, int x, int y, int width, int height) {
+            byte[] patch = new byte[width * height];
+            for (int row = 0; row < height; row++) {
+                System.arraycopy(pixels, (y + row) * MAP_SIZE + x, patch, row * width, width);
+            }
+            return new MapPatch(x, y, width, height, patch);
+        }
+
+        private static long cost(List<MapPatch> patches) {
+            return pixelBytes(patches) + (long) patches.size() * PACKET_PENALTY;
+        }
+
+        private static long pixelBytes(List<MapPatch> patches) {
+            long bytes = 0;
+            for (MapPatch patch : patches) bytes += patch.pixels().length;
+            return bytes;
         }
     }
 

@@ -104,6 +104,10 @@ images:
   # preventing the client's network queue from accumulating an ever-growing backlog.
   animation-bandwidth-per-player-kib: 256
 
+  # Hard per-tick burst ceiling for animated map payloads. Large walls are spread across ticks;
+  # pending tiles always get replaced by the newest frame rather than forming a frame queue.
+  animation-max-burst-kib: 64
+
   # How many worker threads to use when rasterising animated imports (GIF/APNG/WEBP/MP4/WEBM).
   # 1 = single-threaded. 0 = auto (uses available processors).
   processor-threads: 0

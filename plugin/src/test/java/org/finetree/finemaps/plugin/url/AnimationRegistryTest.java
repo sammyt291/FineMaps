@@ -37,9 +37,82 @@ class AnimationRegistryTest {
     }
 
     @Test
-    void bandwidthLimiterAllowsOneOversizedAtomicBatchThenThrottles() {
-        AnimationRegistry.BandwidthLimiter limiter = new AnimationRegistry.BandwidthLimiter(1024);
-        assertTrue(limiter.tryConsume(4096));
+    void bandwidthLimiterRejectsPayloadAboveBurstCeiling() {
+        AnimationRegistry.BandwidthLimiter limiter = new AnimationRegistry.BandwidthLimiter(1024, 2048);
         assertFalse(limiter.tryConsume(4096));
+        assertTrue(limiter.tryConsume(2048));
+        assertFalse(limiter.tryConsume(4096));
+    }
+
+    @Test
+    void separatesDistantDirtyRegionsWhenCheaperThanBoundingBox() {
+        byte[] previous = new byte[128 * 128];
+        byte[] current = previous.clone();
+        current[0] = 1;
+        current[127 * 128 + 127] = 2;
+
+        AnimationRegistry.PatchPlan plan = AnimationRegistry.PatchPlan.between(previous, current);
+
+        assertFalse(plan.full());
+        assertEquals(2, plan.patches().size());
+        assertEquals(512, plan.payloadBytes());
+    }
+
+    @Test
+    void selectsFullTileForChangesAcrossEveryDirtyBlock() {
+        byte[] previous = new byte[128 * 128];
+        byte[] current = new byte[128 * 128];
+        java.util.Arrays.fill(current, (byte) 1);
+
+        AnimationRegistry.PatchPlan plan = AnimationRegistry.PatchPlan.between(previous, current);
+
+        assertTrue(plan.full());
+        assertEquals(128 * 128, plan.payloadBytes());
+    }
+
+    @Test
+    void adaptiveQualityUsesMotionAndPressureRatherThanMapCount() {
+        byte[] previous = new byte[128 * 128];
+        byte[] lowMotion = previous.clone();
+        lowMotion[0] = 1;
+        byte[] highMotion = new byte[128 * 128];
+        java.util.Arrays.fill(highMotion, (byte) 1);
+
+        assertEquals(128, AnimationRegistry.AdaptiveQuality.effectiveResolution(
+            previous, lowMotion, 1.0, Long.MAX_VALUE));
+        assertEquals(64, AnimationRegistry.AdaptiveQuality.effectiveResolution(
+            previous, highMotion, 1.0, Long.MAX_VALUE));
+        assertEquals(32, AnimationRegistry.AdaptiveQuality.effectiveResolution(
+            previous, lowMotion, 0.05, Long.MAX_VALUE));
+    }
+
+    @Test
+    void reducedResolutionRepeatsPalettePixelsDeterministically() {
+        byte[] pixels = new byte[128 * 128];
+        for (int i = 0; i < pixels.length; i++) pixels[i] = (byte) i;
+
+        byte[] first = AnimationRegistry.AdaptiveQuality.reduceResolution(pixels, 64);
+        byte[] second = AnimationRegistry.AdaptiveQuality.reduceResolution(pixels, 64);
+
+        assertArrayEquals(first, second);
+        assertEquals(first[0], first[1]);
+        assertEquals(first[128], first[129]);
+    }
+
+    @Test
+    void contentCacheReusesEqualTilesAndEvictsLeastRecentlyUsed() {
+        AnimationRegistry.TileContentCache cache = new AnimationRegistry.TileContentCache(2);
+        byte[] first = new byte[] {1};
+        byte[] duplicate = new byte[] {1};
+        byte[] second = new byte[] {2};
+        byte[] third = new byte[] {3};
+
+        assertSame(first, cache.canonicalize(first));
+        assertSame(first, cache.canonicalize(duplicate));
+        cache.canonicalize(second);
+        cache.canonicalize(third);
+
+        assertEquals(2, cache.size());
+        assertSame(duplicate, cache.canonicalize(duplicate));
     }
 }
