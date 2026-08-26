@@ -295,6 +295,11 @@ public class FineMapsConfig {
         @ConfigName("animation-bandwidth-per-player-kib")
         private int animationBandwidthPerPlayerKib = 256;
 
+        @Comment("Maximum animated-map payload burst sent to one player in a server tick, in KiB.\n" +
+            "Keeping this small leaves gaps for gameplay packets even when a whole wall changes.")
+        @ConfigName("animation-max-burst-kib")
+        private int animationMaxBurstKib = 64;
+
         @Comment("How many worker threads to use when rasterising animated imports (GIF/APNG/WEBP/MP4/WEBM).\n" +
             "1 = single-threaded. 0 = auto (uses available processors).")
         @ConfigName("processor-threads")
@@ -354,6 +359,10 @@ public class FineMapsConfig {
 
         public int getAnimationBandwidthPerPlayerKib() {
             return animationBandwidthPerPlayerKib;
+        }
+
+        public int getAnimationMaxBurstKib() {
+            return animationMaxBurstKib;
         }
 
         public int getProcessorThreads() {

@@ -69,7 +69,7 @@ public class ImageProcessor {
         
         // Apply dithering to the whole image if requested
         if (dither) {
-            resized = applyFloydSteinbergDither(resized);
+            resized = applyStableOrderedDither(resized);
         }
         
         // Split into individual maps
@@ -96,7 +96,7 @@ public class ImageProcessor {
         BufferedImage resized = resizeImage(image, MAP_SIZE, MAP_SIZE);
         
         if (dither) {
-            resized = applyFloydSteinbergDither(resized);
+            resized = applyStableOrderedDither(resized);
         }
         
         return extractMapPixels(resized, 0, 0);
@@ -147,95 +147,39 @@ public class ImageProcessor {
     }
 
     /**
-     * Applies Floyd-Steinberg dithering to reduce color banding.
+     * Applies a frame-independent ordered dither. Unlike error diffusion, a changed pixel cannot
+     * alter the palette choice of its neighbours, which keeps animation deltas spatially stable.
      */
-    private BufferedImage applyFloydSteinbergDither(BufferedImage image) {
+    private BufferedImage applyStableOrderedDither(BufferedImage image) {
         int width = image.getWidth();
         int height = image.getHeight();
-        
-        // Work with floating point for error diffusion
-        float[][] errR = new float[height][width];
-        float[][] errG = new float[height][width];
-        float[][] errB = new float[height][width];
-        
         BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-        
+        int[][] bayer4 = {
+            {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}
+        };
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 int rgb = image.getRGB(x, y);
                 int alpha = (rgb >> 24) & 0xFF;
-                
-                // Skip transparent pixels
                 if (alpha < 128) {
                     result.setRGB(x, y, 0);
                     continue;
                 }
-                
-                // Get original color + accumulated error
-                float r = ((rgb >> 16) & 0xFF) + errR[y][x];
-                float g = ((rgb >> 8) & 0xFF) + errG[y][x];
-                float b = (rgb & 0xFF) + errB[y][x];
-                
-                // Clamp to valid range
-                r = Math.max(0, Math.min(255, r));
-                g = Math.max(0, Math.min(255, g));
-                b = Math.max(0, Math.min(255, b));
-                
-                // Find nearest palette color
-                byte colorIndex = MapColors.getNearestColorIndex((int) r, (int) g, (int) b);
+                int offset = (bayer4[y & 3][x & 3] - 8) * 2;
+                int r = clamp(((rgb >> 16) & 0xFF) + offset);
+                int g = clamp(((rgb >> 8) & 0xFF) + offset);
+                int b = clamp((rgb & 0xFF) + offset);
+                byte colorIndex = MapColors.getNearestColorIndex(r, g, b);
                 Color nearest = MapColors.getColor(colorIndex & 0xFF);
-                
-                // Set the result pixel
-                result.setRGB(x, y, (alpha << 24) | (nearest.getRed() << 16) | 
+                result.setRGB(x, y, (alpha << 24) | (nearest.getRed() << 16) |
                              (nearest.getGreen() << 8) | nearest.getBlue());
-                
-                // Calculate error
-                float errRVal = r - nearest.getRed();
-                float errGVal = g - nearest.getGreen();
-                float errBVal = b - nearest.getBlue();
-                
-                // Distribute error to neighboring pixels (Floyd-Steinberg pattern)
-                distributeError(errR, errG, errB, x, y, width, height, 
-                               errRVal, errGVal, errBVal);
             }
         }
-        
         return result;
     }
 
-    /**
-     * Distributes quantization error to neighboring pixels.
-     */
-    private void distributeError(float[][] errR, float[][] errG, float[][] errB,
-                                  int x, int y, int width, int height,
-                                  float eR, float eG, float eB) {
-        // Floyd-Steinberg error distribution pattern:
-        //       X   7/16
-        // 3/16 5/16 1/16
-        
-        if (x + 1 < width) {
-            errR[y][x + 1] += eR * 7 / 16f;
-            errG[y][x + 1] += eG * 7 / 16f;
-            errB[y][x + 1] += eB * 7 / 16f;
-        }
-        
-        if (y + 1 < height) {
-            if (x > 0) {
-                errR[y + 1][x - 1] += eR * 3 / 16f;
-                errG[y + 1][x - 1] += eG * 3 / 16f;
-                errB[y + 1][x - 1] += eB * 3 / 16f;
-            }
-            
-            errR[y + 1][x] += eR * 5 / 16f;
-            errG[y + 1][x] += eG * 5 / 16f;
-            errB[y + 1][x] += eB * 5 / 16f;
-            
-            if (x + 1 < width) {
-                errR[y + 1][x + 1] += eR * 1 / 16f;
-                errG[y + 1][x + 1] += eG * 1 / 16f;
-                errB[y + 1][x + 1] += eB * 1 / 16f;
-            }
-        }
+    private static int clamp(int value) {
+        return Math.max(0, Math.min(255, value));
     }
 
     /**

@@ -109,6 +109,40 @@ public class ProtocolLibAdapter implements NMSAdapter {
         }
     }
 
+    @Override
+    public boolean isConnectionWritable(Player player) {
+        Object channel = getChannel(player);
+        if (channel == null) return true;
+        try {
+            return (boolean) channel.getClass().getMethod("isWritable").invoke(channel);
+        } catch (ReflectiveOperationException ignored) {
+            return true;
+        }
+    }
+
+    @Override
+    public long bytesBeforeUnwritable(Player player) {
+        Object channel = getChannel(player);
+        if (channel == null) return Long.MAX_VALUE;
+        try {
+            return ((Number) channel.getClass().getMethod("bytesBeforeUnwritable").invoke(channel)).longValue();
+        } catch (ReflectiveOperationException ignored) {
+            return Long.MAX_VALUE;
+        }
+    }
+
+    private Object getChannel(Player player) {
+        if (player == null) return null;
+        try {
+            Method getNetworkManager = protocolManager.getClass().getMethod("getNetworkManager", Player.class);
+            Object networkManager = getNetworkManager.invoke(protocolManager, player);
+            if (networkManager == null) return null;
+            return networkManager.getClass().getMethod("getChannel").invoke(networkManager);
+        } catch (ReflectiveOperationException ignored) {
+            return null;
+        }
+    }
+
     /**
      * Builds both the original 1.21 map packet and the 1.21.5+ form. Mojang changed the
      * packet's first field from an {@code int} to a {@code MapId} value object, so using
